@@ -1,0 +1,69 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Peblar Slim Laden",
+        "description": "Koppel de externe entiteiten en (optioneel) de TimescaleDB-URL.",
+        "data": {
+          "charger_status": "Lader status",
+          "charger_power": "Laadvermogen",
+          "session_energy": "Sessie-energie",
+          "charger_warnings": "Waarschuwingen (binary_sensor)",
+          "charger_faults": "Fouten (binary_sensor)",
+          "car_soc": "Auto SoC",
+          "grid_power": "Netvermogen (P1)",
+          "pv_power": "PV huidig vermogen",
+          "charge_switch": "Laden aan/uit (switch)",
+          "single_phase_switch": "Dwing enkelvoudige fase (switch)",
+          "charge_limit_number": "Laadlimiet (number)",
+          "restart_button": "Herstart-knop (button)",
+          "preclimate_switch": "Voorklimatisering (switch)",
+          "pv_daily_energy": "PV opbrengst vandaag",
+          "solcast_today_remaining": "Solcast resterend vandaag",
+          "solcast_tomorrow": "Solcast morgen",
+          "solcast_now_power": "Solcast huidig vermogen",
+          "solcast_today": "Solcast vandaag (detailedForecast)",
+          "fc_today_remaining": "Fallback resterend vandaag",
+          "fc_tomorrow": "Fallback morgen",
+          "fc_now_power": "Fallback huidig vermogen",
+          "db_url": "TimescaleDB URL"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Peblar Slim Laden is al geconfigureerd."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Peblar Slim Laden instellingen",
+        "description": "Pas de gekoppelde entiteiten of de TimescaleDB-URL aan.",
+        "data": {
+          "charger_status": "Lader status",
+          "charger_power": "Laadvermogen",
+          "session_energy": "Sessie-energie",
+          "charger_warnings": "Waarschuwingen (binary_sensor)",
+          "charger_faults": "Fouten (binary_sensor)",
+          "car_soc": "Auto SoC",
+          "grid_power": "Netvermogen (P1)",
+          "pv_power": "PV huidig vermogen",
+          "charge_switch": "Laden aan/uit (switch)",
+          "single_phase_switch": "Dwing enkelvoudige fase (switch)",
+          "charge_limit_number": "Laadlimiet (number)",
+          "restart_button": "Herstart-knop (button)",
+          "preclimate_switch": "Voorklimatisering (switch)",
+          "pv_daily_energy": "PV opbrengst vandaag",
+          "solcast_today_remaining": "Solcast resterend vandaag",
+          "solcast_tomorrow": "Solcast morgen",
+          "solcast_now_power": "Solcast huidig vermogen",
+          "solcast_today": "Solcast vandaag (detailedForecast)",
+          "fc_today_remaining": "Fallback resterend vandaag",
+          "fc_tomorrow": "Fallback morgen",
+          "fc_now_power": "Fallback huidig vermogen",
+          "db_url": "TimescaleDB URL"
+        }
+      }
+    }
+  }
+}

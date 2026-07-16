@@ -1,0 +1,69 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Peblar Smart Charging",
+        "description": "Link the external entities and (optionally) the TimescaleDB URL.",
+        "data": {
+          "charger_status": "Charger status",
+          "charger_power": "Charge power",
+          "session_energy": "Session energy",
+          "charger_warnings": "Warnings (binary_sensor)",
+          "charger_faults": "Faults (binary_sensor)",
+          "car_soc": "Car SoC",
+          "grid_power": "Grid power (P1)",
+          "pv_power": "PV current power",
+          "charge_switch": "Charging on/off (switch)",
+          "single_phase_switch": "Force single phase (switch)",
+          "charge_limit_number": "Charge limit (number)",
+          "restart_button": "Restart button",
+          "preclimate_switch": "Preconditioning (switch)",
+          "pv_daily_energy": "PV energy today",
+          "solcast_today_remaining": "Solcast remaining today",
+          "solcast_tomorrow": "Solcast tomorrow",
+          "solcast_now_power": "Solcast current power",
+          "solcast_today": "Solcast today (detailedForecast)",
+          "fc_today_remaining": "Fallback remaining today",
+          "fc_tomorrow": "Fallback tomorrow",
+          "fc_now_power": "Fallback current power",
+          "db_url": "TimescaleDB URL"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Peblar Smart Charging is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Peblar Smart Charging settings",
+        "description": "Adjust the linked entities or the TimescaleDB URL.",
+        "data": {
+          "charger_status": "Charger status",
+          "charger_power": "Charge power",
+          "session_energy": "Session energy",
+          "charger_warnings": "Warnings (binary_sensor)",
+          "charger_faults": "Faults (binary_sensor)",
+          "car_soc": "Car SoC",
+          "grid_power": "Grid power (P1)",
+          "pv_power": "PV current power",
+          "charge_switch": "Charging on/off (switch)",
+          "single_phase_switch": "Force single phase (switch)",
+          "charge_limit_number": "Charge limit (number)",
+          "restart_button": "Restart button",
+          "preclimate_switch": "Preconditioning (switch)",
+          "pv_daily_energy": "PV energy today",
+          "solcast_today_remaining": "Solcast remaining today",
+          "solcast_tomorrow": "Solcast tomorrow",
+          "solcast_now_power": "Solcast current power",
+          "solcast_today": "Solcast today (detailedForecast)",
+          "fc_today_remaining": "Fallback remaining today",
+          "fc_tomorrow": "Fallback tomorrow",
+          "fc_now_power": "Fallback current power",
+          "db_url": "TimescaleDB URL"
+        }
+      }
+    }
+  }
+}

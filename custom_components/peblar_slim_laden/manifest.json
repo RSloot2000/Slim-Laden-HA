@@ -1,0 +1,13 @@
+{
+  "domain": "peblar_slim_laden",
+  "name": "Peblar Slim Laden",
+  "version": "0.1.0",
+  "codeowners": ["@RSloot2000"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/RSloot2000/Slim-Laden-HA",
+  "issue_tracker": "https://github.com/RSloot2000/Slim-Laden-HA/issues",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "requirements": ["psycopg2-binary>=2.9"]
+}
