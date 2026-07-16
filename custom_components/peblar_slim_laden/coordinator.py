@@ -45,9 +45,15 @@ from .const import (
     EMERGENCY_IMPORT_W,
     ERR_RESTART_MIN_MINUTEN,
     FAULT_CLEAR_STABIEL_MINUTEN,
+    FORECAST_BIAS_MAX,
+    FORECAST_BIAS_MIN,
     GRACE_HOURS,
+    HIT_RATE_TARGET,
+    KWH_PER_PCT_MAX,
+    KWH_PER_PCT_MIN,
     MAX_RESTART_POGINGEN,
     PHASE_SETTLE_S,
+    RAMP_BIAS_MAX,
     RESTART_COOLDOWN_MIN_MINUTEN,
     SET_ACCU_CAPACITEIT_KWH,
     SET_ANDERE_AUTO,
@@ -109,6 +115,8 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         self._time_changed_flag = False
         self._debounce_cancel = None
         self._unsub_listeners: list = []
+        # Geleerde signalen uit de DB (Fase C-E); leeg tot de eerste uitlezing.
+        self.learned: dict = {}
 
     # ------------------------------------------------------------------
     # Persistente opslag
@@ -121,10 +129,19 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             self.state_data.update(data.get("state", {}))
 
     async def async_save_store(self) -> None:
-        """Bewaar settings + interne state."""
+        """Bewaar settings + interne state (direct)."""
         await self._store.async_save(
             {"settings": self.settings, "state": self.state_data}
         )
+
+    @callback
+    def _data_to_save(self) -> dict:
+        return {"settings": self.settings, "state": self.state_data}
+
+    @callback
+    def _schedule_save(self) -> None:
+        """Plan een uitgestelde save (voorkomt schrijven bij elke cyclus)."""
+        self._store.async_delay_save(self._data_to_save, 30)
 
     def get_setting(self, key: str):
         return self.settings.get(key, DEFAULT_SETTINGS.get(key))
@@ -348,6 +365,13 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         current_phase = 1 if self._is_on(CONF_SINGLE_PHASE_SWITCH) else 3
         current_amps = int(self._num(CONF_CHARGE_LIMIT_NUMBER, min_a) or min_a)
 
+        # Fase C-E: geleerde signalen + afgeleide ramp-bias uit de hit-rate.
+        learned = self.learned
+        ramp_bias = 0.0
+        hit_rate = learned.get("hit_rate")
+        if hit_rate is not None and hit_rate < HIT_RATE_TARGET:
+            ramp_bias = clamp((HIT_RATE_TARGET - hit_rate) * 0.5, 0.0, RAMP_BIAS_MAX)
+
         inp = ChargeInputs(
             now=now,
             laadmodus=str(self.get_setting(SET_LAADMODUS)),
@@ -390,6 +414,11 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             seconds_since_charge_switch=self._secs_since(ST_LAST_CHARGE_SWITCH, now),
             seconds_since_charge_demand=self._secs_since(ST_LAST_CHARGE_DEMAND, now),
             session_energy_kwh=self._num(CONF_SESSION_ENERGY, 0.0) or 0.0,
+            forecast_bias=learned.get("forecast_bias") or 1.0,
+            kwh_per_pct=learned.get("kwh_per_pct"),
+            wpa_1p=learned.get("wpa_1p"),
+            wpa_3p=learned.get("wpa_3p"),
+            ramp_bias=ramp_bias,
         )
         return inp
 
@@ -406,12 +435,15 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         regelen = bool(self.get_setting(SET_REGELEN_ACTIEF))
 
         await self._handle_capacity(inp, now)
+        # W/A leren gebeurt altijd (pure observatie), ook in observe-only.
+        if decision.update_wpa:
+            self._set_state(ST_WPA_STORED, clamp(decision.wpa_new, WPA_MIN, WPA_MAX))
         await self._handle_faults(inp, now, regelen)
         await self._handle_departure(decision, now, regelen)
         if regelen and not decision.dep_reset_needed:
             await self._apply_control(inp, decision, now)
 
-        await self.async_save_store()
+        self._schedule_save()
         await self._log_cycle(decision)
         return decision
 
@@ -478,6 +510,10 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             self._set_state(ST_RESTART_ATTEMPTS, 0)
             await self._dismiss("peblar_lader_gestrand")
 
+        # In observe-only mode niet herstarten en geen gestrand-status bijhouden.
+        if not regelen:
+            return
+
         restart_cooldown_ok = secs_since_restart >= RESTART_COOLDOWN_MIN_MINUTEN * 60
         fault_long_enough = (
             (warn_active and warn_secs_on >= WARN_RESTART_MIN_MINUTEN * 60)
@@ -489,7 +525,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         )
 
         if charger_stranded:
-            if regelen and self._is_on(CONF_CHARGE_SWITCH):
+            if self._is_on(CONF_CHARGE_SWITCH):
                 await self._service("switch", "turn_off", CONF_CHARGE_SWITCH)
             await self._notify(
                 "peblar_lader_gestrand",
@@ -501,8 +537,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             return
 
         if restart_needed:
-            if regelen:
-                await self._service("button", "press", CONF_RESTART_BUTTON)
+            await self._service("button", "press", CONF_RESTART_BUTTON)
             self._set_state(ST_LAST_RESTART, now.isoformat())
             self._set_state(ST_RESTART_ATTEMPTS, attempts + 1)
             if debug:
@@ -557,9 +592,9 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             await self._service("switch", "turn_on", CONF_CHARGE_SWITCH)
             self._set_state(ST_LAST_CHARGE_SWITCH, now.isoformat())
 
-        # W/A leren (persisteer geklemde EMA).
-        if d.update_wpa:
-            self._set_state(ST_WPA_STORED, clamp(d.wpa_new, WPA_MIN, WPA_MAX))
+        # Niet verder regelen (ampère/fase) als we niet willen laden.
+        if not d.want_charge:
+            return
 
         # Ampère / fase toepassen.
         if d.phase_change_needed or d.amps_change_needed:
@@ -598,6 +633,14 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         entity_id = self.conf.get(CONF_CHARGE_LIMIT_NUMBER)
         if not entity_id:
             return
+        # Idempotent: sla over als de laadlimiet al op deze waarde staat.
+        st = self.hass.states.get(entity_id)
+        if st is not None:
+            try:
+                if int(float(st.state)) == int(value):
+                    return
+            except (TypeError, ValueError):
+                pass
         await self.hass.services.async_call(
             "number",
             "set_value",
@@ -685,5 +728,33 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("peblar_slim_laden: forecast-capture mislukt: %s", err)
+
+    async def async_refresh_learned(self, _now=None) -> None:
+        """Lees geleerde signalen uit de DB en klem ze (Fase C-E)."""
+        db_url = self.conf.get(CONF_DB_URL)
+        if not db_url:
+            return
+        try:
+            raw = await self.hass.async_add_executor_job(db.read_learned, db_url)
+        except Exception as err:  # noqa: BLE001 - DB nooit fataal
+            _LOGGER.warning("peblar_slim_laden: leren-uitlezen mislukt: %s", err)
+            return
+
+        learned: dict = {}
+        fb = raw.get("forecast_bias")
+        learned["forecast_bias"] = (
+            clamp(fb, FORECAST_BIAS_MIN, FORECAST_BIAS_MAX) if fb else None
+        )
+        kp = raw.get("kwh_per_pct")
+        learned["kwh_per_pct"] = (
+            clamp(kp, KWH_PER_PCT_MIN, KWH_PER_PCT_MAX) if kp else None
+        )
+        for key in ("wpa_1p", "wpa_3p"):
+            val = raw.get(key)
+            learned[key] = clamp(val, WPA_MIN, WPA_MAX) if val else None
+        hr = raw.get("hit_rate")
+        learned["hit_rate"] = clamp(hr, 0.0, 1.0) if hr is not None else None
+        self.learned = learned
+        _LOGGER.debug("peblar_slim_laden: geleerde waarden bijgewerkt: %s", learned)
 
     db_status: str = "unknown"

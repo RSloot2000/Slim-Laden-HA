@@ -101,6 +101,13 @@ class ChargeInputs:
     # Sessie-energie (telemetrie)
     session_energy_kwh: float = 0.0
 
+    # Geleerde signalen uit de database (Fase C-E). None = nog geen data.
+    forecast_bias: float = 1.0           # schaalt expected_solar_kwh
+    kwh_per_pct: float | None = None     # geleerde kWh per 1% SoC (incl. verlies)
+    wpa_1p: float | None = None          # geleerde W/A op 1 fase
+    wpa_3p: float | None = None          # geleerde W/A op 3 fasen
+    ramp_bias: float = 0.0               # vervroegt de ramp bij lage hit-rate
+
 
 @dataclass
 class ChargeDecision:
@@ -184,13 +191,17 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - port van YAML
         inp.soc_raw is not None
         and 0 <= inp.soc_raw <= 100
     )
-    soc_now = round(inp.soc_raw, 1) if soc_valid else 0.0
+    soc_now = round(inp.soc_raw, 1) if (soc_valid and inp.soc_raw is not None) else 0.0
     d.soc_valid = soc_valid
     d.soc_now = soc_now
 
     kwh_needed = 0.0
     if soc_valid and inp.soc_target > soc_now:
-        kwh_needed = (inp.soc_target - soc_now) / 100 * inp.battery_capacity_kwh
+        if inp.kwh_per_pct is not None:
+            # Geleerde kWh per procent (incl. laadverlies) heeft voorrang.
+            kwh_needed = (inp.soc_target - soc_now) * inp.kwh_per_pct
+        else:
+            kwh_needed = (inp.soc_target - soc_now) / 100 * inp.battery_capacity_kwh
     d.kwh_needed = kwh_needed
 
     # --- Vertrektijd/datum ---
@@ -237,7 +248,7 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - port van YAML
     )
 
     day_offset = 0
-    if not no_departure and dep_date_valid:
+    if not no_departure and dep_date_valid and inp.dep_date is not None:
         try:
             day_offset = (
                 datetime.strptime(inp.dep_date, "%Y-%m-%d").date() - inp.now.date()
@@ -281,6 +292,8 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - port van YAML
             (solar_today_capped_kwh + inp.fc_tomorrow * tomorrow_frac)
             * inp.zon_benut_factor
         )
+    # Geleerde forecast-bias corrigeert structurele over-/onderschatting.
+    expected_solar_kwh *= inp.forecast_bias
     d.expected_solar_kwh = expected_solar_kwh
     grid_deficit_kwh = max(0.0, kwh_needed - expected_solar_kwh)
 
@@ -306,7 +319,10 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - port van YAML
         else min_time_h / hours_left
     )
     d.urgentie = urgentie
-    ramp_factor = clamp((urgentie - 0.67) / 0.33, 0.0, 1.0)
+    # ramp_bias vervroegt de ramp (start eerder dan urgentie 0.67) wanneer de
+    # doel-SoC de laatste tijd vaak gemist werd.
+    ramp_start = 0.67 - clamp(inp.ramp_bias, 0.0, 0.3)
+    ramp_factor = clamp((urgentie - ramp_start) / 0.33, 0.0, 1.0)
     d.ramp_factor = ramp_factor
     ramp_target_w = base_floor_w + ramp_factor * (charger_max_w - base_floor_w)
 
@@ -409,7 +425,10 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - port van YAML
         (1 - WPA_EMA_ALPHA) * inp.wpa_stored + WPA_EMA_ALPHA * wpa_meas, 1
     )
     d.wpa_new = wpa_new
-    real_w_per_a = inp.wpa_stored
+    # Per-fase geleerde W/A (uit de DB) heeft voorrang voor de amp-berekening;
+    # anders de live EMA-waarde als fallback.
+    learned_wpa = inp.wpa_3p if desired_phase == 3 else inp.wpa_1p
+    real_w_per_a = learned_wpa if learned_wpa is not None else inp.wpa_stored
     d.real_w_per_a = real_w_per_a
     d.update_wpa = wpa_meas_valid and abs(wpa_new - inp.wpa_stored) >= 1
 
@@ -459,13 +478,18 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - port van YAML
     want_charge = want_charge_raw or (inp.charge_now_on and within_stop_grace)
     d.want_charge = want_charge
 
+    # Onze auto is aangesloten. Wanneer de lader ACTIEF laadt is de auto
+    # aantoonbaar aanwezig -> dan regelen we ook zonder geldige SoC (anders zou
+    # een SoC-uitval het stoppen/regelen blokkeren en blijven we importeren).
+    # Bij 'suspended' blijven we conservatief en eisen we wel een geldige SoC.
     my_car_here = (
-        inp.peb_status in ("charging", "suspended")
-        and not inp.other_car and soc_valid
+        not inp.other_car
+        and (
+            inp.peb_status == "charging"
+            or (inp.peb_status == "suspended" and soc_valid)
+            or (inp.preclimate_active and inp.peb_status in ("charging", "suspended"))
+        )
     )
-    # Tijdens preclimate mag "vol" (soc_valid maar want_charge=false) niet blokkeren.
-    if inp.preclimate_active and inp.peb_status in ("charging", "suspended") and not inp.other_car:
-        my_car_here = True
     d.my_car_here = my_car_here
 
     # Bepaal de gewenste laadschakelaar-stand (None = niet wijzigen).

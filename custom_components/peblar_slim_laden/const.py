@@ -178,6 +178,15 @@ FAULT_CLEAR_STABIEL_MINUTEN = 10
 UPDATE_INTERVAL = timedelta(minutes=2)
 DEBOUNCE_SECONDS = 8
 
+# Leerlaag (Fase C-E): periodieke DB-uitlezing + clamps op geleerde waarden.
+LEARN_REFRESH_INTERVAL = timedelta(minutes=30)
+FORECAST_BIAS_MIN = 0.5
+FORECAST_BIAS_MAX = 1.5
+KWH_PER_PCT_MIN = 0.2
+KWH_PER_PCT_MAX = 1.2
+RAMP_BIAS_MAX = 0.15
+HIT_RATE_TARGET = 0.8
+
 # ---------------------------------------------------------------------------
 # TimescaleDB — kolommen van peb_charge_cycle (ts server-side).
 # ---------------------------------------------------------------------------

@@ -7,13 +7,14 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_PV_DAILY_ENERGY,
     CONF_SOLCAST_TODAY,
     DOMAIN,
+    LEARN_REFRESH_INTERVAL,
     PLATFORMS,
 )
 from .coordinator import PeblarCoordinator
@@ -25,12 +26,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Zet een config entry op."""
     coordinator = PeblarCoordinator(hass, entry)
     await coordinator.async_load_store()
+    # Geleerde signalen ophalen vóór de eerste regelcyclus (Fase C-E).
+    await coordinator.async_refresh_learned()
     await coordinator.async_config_entry_first_refresh()
     coordinator.setup_listeners()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Geleerde signalen periodiek verversen.
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass, coordinator.async_refresh_learned, LEARN_REFRESH_INTERVAL
+        )
+    )
 
     # Sessiedetectie elke 10 minuten.
     async def _sessions(_now) -> None:

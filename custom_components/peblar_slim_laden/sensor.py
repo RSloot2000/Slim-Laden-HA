@@ -112,6 +112,35 @@ SENSORS: tuple[PeblarSensorDescription, ...] = (
         key="db_status", name="DB-status",
         value_fn=lambda d, c: c.db_status,
     ),
+    # Geleerde signalen uit de database (Fase C-E).
+    PeblarSensorDescription(
+        key="forecast_bias", name="Forecast-bias (geleerd)",
+        suggested_display_precision=2,
+        value_fn=lambda d, c: c.learned.get("forecast_bias"),
+    ),
+    PeblarSensorDescription(
+        key="kwh_per_pct", name="kWh per % (geleerd)",
+        native_unit_of_measurement="kWh", suggested_display_precision=3,
+        value_fn=lambda d, c: c.learned.get("kwh_per_pct"),
+    ),
+    PeblarSensorDescription(
+        key="wpa_1p", name="W per A 1-fase (geleerd)",
+        native_unit_of_measurement="W/A", suggested_display_precision=0,
+        value_fn=lambda d, c: c.learned.get("wpa_1p"),
+    ),
+    PeblarSensorDescription(
+        key="wpa_3p", name="W per A 3-fase (geleerd)",
+        native_unit_of_measurement="W/A", suggested_display_precision=0,
+        value_fn=lambda d, c: c.learned.get("wpa_3p"),
+    ),
+    PeblarSensorDescription(
+        key="hit_rate", name="Doel-SoC hitrate (geleerd)",
+        native_unit_of_measurement="%", suggested_display_precision=0,
+        value_fn=lambda d, c: (
+            None if c.learned.get("hit_rate") is None
+            else round(c.learned["hit_rate"] * 100)
+        ),
+    ),
 )
 
 

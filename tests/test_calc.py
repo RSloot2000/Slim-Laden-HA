@@ -123,6 +123,72 @@ d = compute(
 )
 check("Deadband: amps blijft 10 zonder cooldown", d.amps_set == 10)
 
+# 8) SoC-uitval tijdens actief laden: auto blijft "aanwezig" (kan stoppen/regelen).
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Hybride", soc_raw=None, peb_status="charging",
+        grid_ok=True,
+    )
+)
+check("SoC-uitval + charging: my_car_here", d.my_car_here is True)
+check("SoC-uitval: kwh_needed 0", d.kwh_needed == 0)
+
+# 9) SoC-uitval terwijl gepauzeerd: conservatief -> niet als aanwezig zien.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Hybride", soc_raw=None, peb_status="suspended",
+        grid_ok=True,
+    )
+)
+check("SoC-uitval + suspended: my_car_here False", d.my_car_here is False)
+
+# 10) Geleerde kWh/% heeft voorrang op statische capaciteit.
+d = compute(
+    ChargeInputs(
+        now=NOW, soc_raw=50, soc_target=100, kwh_per_pct=0.55,
+        battery_capacity_kwh=50,
+    )
+)
+check("kwh_per_pct toegepast", abs(d.kwh_needed - 27.5) < 0.01)
+
+# 11) Forecast-bias schaalt de verwachte zon.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Hybride", soc_raw=50, soc_target=100,
+        dep_time="18:00:00", dep_date=NOW.date().strftime("%Y-%m-%d"),
+        solar_detail_ok=True, solar_before_dep_kwh=10, zon_benut_factor=1.0,
+        forecast_bias=0.5, grid_ok=True,
+    )
+)
+check("forecast_bias toegepast", abs(d.expected_solar_kwh - 5.0) < 0.01)
+
+# 12) Per-fase geleerde W/A voedt real_w_per_a.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zon", soc_raw=50, current_phase=1,
+        wpa_1p=210, wpa_3p=225, grid_ok=True,
+    )
+)
+check("per-fase W/A 1-fase toegepast", d.real_w_per_a == 210)
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Snel", soc_raw=50, current_phase=3,
+        wpa_1p=210, wpa_3p=225,
+    )
+)
+check("per-fase W/A 3-fase toegepast", d.real_w_per_a == 225)
+
+# 13) Ramp-bias laat de ramp niet later, maar eerder/gelijk starten.
+_base = dict(
+    now=NOW, laadmodus="Hybride", soc_raw=20, soc_target=100,
+    dep_time=(NOW + timedelta(hours=3)).strftime("%H:%M:%S"),
+    dep_date=NOW.date().strftime("%Y-%m-%d"), battery_capacity_kwh=50,
+    max_a=16, grid_ok=True,
+)
+d0 = compute(ChargeInputs(ramp_bias=0.0, **_base))
+d1 = compute(ChargeInputs(ramp_bias=0.15, **_base))
+check("ramp_bias verhoogt (of gelijk) ramp_factor", d1.ramp_factor >= d0.ramp_factor)
+
 print()
 if FAILS:
     print(f"{len(FAILS)} test(s) gefaald:", ", ".join(FAILS))

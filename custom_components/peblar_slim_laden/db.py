@@ -131,3 +131,72 @@ def forecast_upsert(
             )
     finally:
         conn.close()
+
+
+def read_learned(url: str) -> dict:
+    """Lees geleerde regelsignalen uit de DB (Fase C-E).
+
+    Retourneert ruwe (ongeklemde) waarden; None waar te weinig data is.
+    De aanroeper klemt en valt terug op veilige defaults.
+    """
+    out: dict = {
+        "forecast_bias": None,
+        "kwh_per_pct": None,
+        "wpa_1p": None,
+        "wpa_3p": None,
+        "hit_rate": None,
+    }
+    conn = psycopg2.connect(url, connect_timeout=_CONNECT_TIMEOUT)
+    try:
+        with conn, conn.cursor() as cur:
+            # Forecast-bias: gemiddelde actual/forecast-ratio (laatste 30 dagen).
+            cur.execute(
+                "SELECT AVG(ratio) FROM peb_forecast_accuracy "
+                "WHERE ratio IS NOT NULL AND ratio BETWEEN 0.2 AND 3.0 "
+                "AND day > (now()::date - 30)"
+            )
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                out["forecast_bias"] = float(row[0])
+
+            # Geleerde kWh per 1% SoC uit voltooide sessies (incl. laadverlies).
+            cur.execute(
+                "SELECT AVG(energy_kwh / NULLIF(soc_end - soc_start, 0)) "
+                "FROM peb_charge_session "
+                "WHERE (soc_end - soc_start) >= 15 AND energy_kwh > 1 "
+                "AND start_ts > now() - interval '60 days'"
+            )
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                out["kwh_per_pct"] = float(row[0])
+
+            # Per-fase W/A uit geldige cyclus-metingen (laatste 30 dagen).
+            cur.execute(
+                "SELECT desired_phase, AVG(wpa_meas) FROM peb_charge_cycle "
+                "WHERE wpa_meas_valid AND wpa_meas BETWEEN 150 AND 250 "
+                "AND desired_phase IN (1, 3) "
+                "AND ts > now() - interval '30 days' "
+                "GROUP BY desired_phase"
+            )
+            for phase, avg in cur.fetchall():
+                if avg is None:
+                    continue
+                if int(phase) == 1:
+                    out["wpa_1p"] = float(avg)
+                elif int(phase) == 3:
+                    out["wpa_3p"] = float(avg)
+
+            # Hit-rate: aandeel sessies dat de doel-SoC haalde (laatste 30 dagen).
+            cur.execute(
+                "SELECT AVG(CASE WHEN hit_target THEN 1.0 ELSE 0.0 END) "
+                "FROM peb_charge_session "
+                "WHERE (soc_end - soc_start) >= 15 "
+                "AND start_ts > now() - interval '30 days'"
+            )
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                out["hit_rate"] = float(row[0])
+    finally:
+        conn.close()
+    return out
+
