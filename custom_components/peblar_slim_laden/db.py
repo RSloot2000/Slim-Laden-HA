@@ -153,7 +153,8 @@ def read_learned(url: str) -> dict:
             cur.execute(
                 "SELECT AVG(ratio) FROM peb_forecast_accuracy "
                 "WHERE ratio IS NOT NULL AND ratio BETWEEN 0.2 AND 3.0 "
-                "AND day > (now()::date - 30)"
+                "AND day > (now()::date - 30) "
+                "HAVING count(*) >= 3"
             )
             row = cur.fetchone()
             if row and row[0] is not None:
@@ -164,7 +165,8 @@ def read_learned(url: str) -> dict:
                 "SELECT AVG(energy_kwh / NULLIF(soc_end - soc_start, 0)) "
                 "FROM peb_charge_session "
                 "WHERE (soc_end - soc_start) >= 15 AND energy_kwh > 1 "
-                "AND start_ts > now() - interval '60 days'"
+                "AND start_ts > now() - interval '60 days' "
+                "HAVING count(*) >= 4"
             )
             row = cur.fetchone()
             if row and row[0] is not None:
@@ -176,7 +178,7 @@ def read_learned(url: str) -> dict:
                 "WHERE wpa_meas_valid AND wpa_meas BETWEEN 150 AND 250 "
                 "AND desired_phase IN (1, 3) "
                 "AND ts > now() - interval '30 days' "
-                "GROUP BY desired_phase"
+                "GROUP BY desired_phase HAVING count(*) >= 20"
             )
             for phase, avg in cur.fetchall():
                 if avg is None:
@@ -191,7 +193,8 @@ def read_learned(url: str) -> dict:
                 "SELECT AVG(CASE WHEN hit_target THEN 1.0 ELSE 0.0 END) "
                 "FROM peb_charge_session "
                 "WHERE (soc_end - soc_start) >= 15 "
-                "AND start_ts > now() - interval '30 days'"
+                "AND start_ts > now() - interval '30 days' "
+                "HAVING count(*) >= 5"
             )
             row = cur.fetchone()
             if row and row[0] is not None:
