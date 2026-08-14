@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections import deque
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from . import db
-from .calc import ChargeInputs, ChargeDecision, clamp, compute
+from .calc import ChargeInputs, ChargeDecision, clamp, compute, parse_departure
 from .const import (
     CONF_CAR_SOC,
     CONF_CHARGE_LIMIT_NUMBER,
@@ -30,6 +30,7 @@ from .const import (
     CONF_FC_TOMORROW,
     CONF_GRID_POWER,
     CONF_PRECLIMATE_SWITCH,
+    CONF_PV_DAILY_ENERGY,
     CONF_PV_POWER,
     CONF_RESTART_BUTTON,
     CONF_SESSION_ENERGY,
@@ -47,12 +48,14 @@ from .const import (
     FAULT_CLEAR_STABIEL_MINUTEN,
     FORECAST_BIAS_MAX,
     FORECAST_BIAS_MIN,
-    GRACE_HOURS,
     HIT_RATE_TARGET,
+    HW_MAX_A,
+    HW_MIN_A,
     KWH_PER_PCT_MAX,
     KWH_PER_PCT_MIN,
     MAX_RESTART_POGINGEN,
-    PHASE_SETTLE_S,
+    POWER_SAMPLE_MAXLEN,
+    POWER_SAMPLE_WINDOW,
     RAMP_BIAS_MAX,
     RESTART_COOLDOWN_MIN_MINUTEN,
     SET_ACCU_CAPACITEIT_KWH,
@@ -91,7 +94,6 @@ _LOGGER = logging.getLogger(__name__)
 
 _UNAVAILABLE = ("unknown", "unavailable", "", None)
 _STORAGE_VERSION = 1
-_ROLLING_MAX_AGE = timedelta(minutes=2)
 
 
 class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
@@ -103,18 +105,29 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             _LOGGER,
             name=DOMAIN,
             update_interval=UPDATE_INTERVAL,
+            # Throttle: bronwijzigingen mogen hooguit eens per cooldown een
+            # regelcyclus starten. Anders stelt een 1 Hz P1-meter de lus
+            # eindeloos uit (een resettende debounce vuurt dan nooit).
+            request_refresh_debouncer=Debouncer(
+                hass, _LOGGER, cooldown=DEBOUNCE_SECONDS, immediate=False
+            ),
         )
         self.entry = entry
         self.conf = {**entry.data, **entry.options}
         self._store = Store(hass, _STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         self.settings: dict = dict(DEFAULT_SETTINGS)
         self.state_data: dict = dict(DEFAULT_STATE)
-        self._grid_samples: deque[tuple[datetime, float]] = deque()
-        self._charger_samples: deque[tuple[datetime, float]] = deque()
+        self._grid_samples: deque[tuple[datetime, float]] = deque(
+            maxlen=POWER_SAMPLE_MAXLEN
+        )
+        self._charger_samples: deque[tuple[datetime, float]] = deque(
+            maxlen=POWER_SAMPLE_MAXLEN
+        )
         self._prev_status: str | None = None
         self._time_changed_flag = False
-        self._debounce_cancel = None
+        self._stranded_notified = False
         self._unsub_listeners: list = []
+        self.db_status = "unknown"
         # Geleerde signalen uit de DB (Fase C-E); leeg tot de eerste uitlezing.
         self.learned: dict = {}
 
@@ -147,12 +160,17 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         return self.settings.get(key, DEFAULT_SETTINGS.get(key))
 
     async def async_set_setting(self, key: str, value) -> None:
-        """Wijzig een instelling, sla op en trigger een (gedebouncede) refresh."""
+        """Wijzig een instelling vanuit de UI, sla op en vraag een refresh aan."""
+        self._apply_setting(key, value)
+        await self.async_save_store()
+        await self.async_request_refresh()
+
+    @callback
+    def _apply_setting(self, key: str, value) -> None:
+        """Zet een instelling zonder opslag/refresh (voor gebruik in de regellus)."""
         self.settings[key] = value
         if key == SET_VERTREKTIJD:
             self._time_changed_flag = True
-        await self.async_save_store()
-        self._schedule_refresh_debounced()
 
     def _get_state(self, key: str):
         return self.state_data.get(key, DEFAULT_STATE.get(key))
@@ -161,10 +179,10 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         self.state_data[key] = value
 
     # ------------------------------------------------------------------
-    # Listeners / debounce
+    # Listeners / throttling
     # ------------------------------------------------------------------
     def setup_listeners(self) -> None:
-        """Reageer op wijzigingen van de bronsensoren (gedebounced)."""
+        """Reageer op wijzigingen van de bronsensoren (gethrottled)."""
         entities = [
             self.conf.get(k)
             for k in (
@@ -186,28 +204,15 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
                 )
             )
 
-    @callback
-    def _on_source_change(self, event) -> None:
-        self._schedule_refresh_debounced()
-
-    @callback
-    def _schedule_refresh_debounced(self) -> None:
-        if self._debounce_cancel is not None:
-            self._debounce_cancel()
-
-        async def _fire(_now) -> None:
-            self._debounce_cancel = None
-            await self.async_request_refresh()
-
-        self._debounce_cancel = async_call_later(self.hass, DEBOUNCE_SECONDS, _fire)
+    async def _on_source_change(self, event) -> None:
+        """Bemonster vermogens bij elke bronwijziging en vraag een refresh aan."""
+        self._sample_power(dt_util.now())
+        await self.async_request_refresh()
 
     def shutdown(self) -> None:
         for unsub in self._unsub_listeners:
             unsub()
         self._unsub_listeners.clear()
-        if self._debounce_cancel is not None:
-            self._debounce_cancel()
-            self._debounce_cancel = None
 
     # ------------------------------------------------------------------
     # Uitleeshelpers
@@ -225,6 +230,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             return default
 
     def _raw_available(self, conf_key: str) -> bool:
+        """True als de gekoppelde entiteit een bruikbare state heeft."""
         entity_id = self.conf.get(conf_key)
         if not entity_id:
             return False
@@ -269,12 +275,18 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             return 0.0
         return (now - st.last_changed).total_seconds()
 
-    def _rolling_mean(
-        self, samples: deque, now: datetime, live: float | None
-    ) -> float | None:
-        if live is not None:
-            samples.append((now, live))
-        cutoff = now - _ROLLING_MAX_AGE
+    @callback
+    def _sample_power(self, now: datetime) -> None:
+        """Leg de actuele net-/laadvermogens vast voor het glijdend gemiddelde."""
+        grid = self._num(CONF_GRID_POWER)
+        if grid is not None:
+            self._grid_samples.append((now, grid))
+        charger = self._num(CONF_CHARGER_POWER)
+        if charger is not None:
+            self._charger_samples.append((now, charger))
+
+    def _rolling_mean(self, samples: deque, now: datetime) -> float | None:
+        cutoff = now - POWER_SAMPLE_WINDOW
         while samples and samples[0][0] < cutoff:
             samples.popleft()
         if not samples:
@@ -282,9 +294,14 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         return sum(v for _, v in samples) / len(samples)
 
     def _solar_before_dep(self, now: datetime, deadline: datetime) -> tuple[float, bool]:
-        """Som de half-uur-slots (Solcast detailedForecast) tot de deadline."""
+        """Som de half-uur-slots (Solcast detailedForecast) tot de deadline.
+
+        Het tweede returnveld is alleen True wanneer de forecast de héle periode
+        tot de deadline dekt; anders zou een deelvoorspelling de zonopbrengst
+        structureel onderschatten.
+        """
         total = 0.0
-        detail_ok = False
+        last_slot_end: datetime | None = None
         for key in (CONF_SOLCAST_TODAY, CONF_SOLCAST_TOMORROW):
             entity_id = self.conf.get(key)
             if not entity_id:
@@ -295,31 +312,36 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             fc = st.attributes.get("detailedForecast")
             if not fc:
                 continue
-            detail_ok = True
             for item in fc:
                 ts = dt_util.parse_datetime(str(item.get("period_start")))
                 if ts is None:
                     continue
-                if ts + timedelta(minutes=30) > now and ts < deadline:
+                slot_end = ts + timedelta(minutes=30)
+                if last_slot_end is None or slot_end > last_slot_end:
+                    last_slot_end = slot_end
+                if slot_end > now and ts < deadline:
                     try:
                         total += float(item.get("pv_estimate") or 0)
                     except (TypeError, ValueError):
                         pass
-        return round(total, 3), detail_ok
+        covers = last_slot_end is not None and last_slot_end >= deadline
+        return round(total, 3), covers
 
     # ------------------------------------------------------------------
     # Inputs bouwen
     # ------------------------------------------------------------------
     def _build_inputs(self, now: datetime) -> ChargeInputs:
-        min_a = int(self.get_setting(SET_MIN_A))
-        max_a = int(self.get_setting(SET_MAX_A))
+        # Instelgrenzen consistent houden (min nooit boven max, altijd binnen HW).
+        min_a = int(clamp(int(self.get_setting(SET_MIN_A)), HW_MIN_A, HW_MAX_A))
+        max_a = int(clamp(int(self.get_setting(SET_MAX_A)), min_a, HW_MAX_A))
 
-        # Vermogens (live + rolling means).
+        # Vermogens (live + glijdend gemiddelde over POWER_SAMPLE_WINDOW).
+        self._sample_power(now)
         grid_live = self._num(CONF_GRID_POWER)
         grid_ok = grid_live is not None
         charger_live = self._num(CONF_CHARGER_POWER)
-        grid_avg = self._rolling_mean(self._grid_samples, now, grid_live)
-        charger_avg = self._rolling_mean(self._charger_samples, now, charger_live)
+        grid_avg = self._rolling_mean(self._grid_samples, now)
+        charger_avg = self._rolling_mean(self._charger_samples, now)
         grid_w = grid_live if grid_live is not None else (grid_avg or 0.0)
         charger_w = charger_live if charger_live is not None else (charger_avg or 0.0)
         charge_power_now = charger_avg if charger_avg is not None else charger_w
@@ -335,35 +357,21 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         pv_now = self._num(CONF_SOLCAST_NOW_POWER)
         if pv_now is None:
             pv_now = self._num(CONF_FC_NOW_POWER, 0.0) or 0.0
-        pv_prod = self._num(CONF_PV_POWER)
-        if pv_prod is None:
-            pv_prod = pv_now
 
         # Vertrek.
         dep_time = str(self.get_setting(SET_VERTREKTIJD) or "00:00:00")
         dep_date = self.get_setting(SET_VERTREKDATUM)
-        no_departure = dep_time in ("00:00:00", "", "unknown", "unavailable", None)
 
-        # detailedForecast tot deadline.
+        # detailedForecast tot de deadline (zelfde parser als calc.compute).
         solar_before = 0.0
         detail_ok = False
-        if not no_departure and dep_date:
-            try:
-                day_offset = (
-                    datetime.strptime(dep_date, "%Y-%m-%d").date() - now.date()
-                ).days
-                h, m, s = (int(x) for x in dep_time.split(":"))
-                dep = now.replace(hour=h, minute=m, second=s, microsecond=0) + timedelta(
-                    days=day_offset
-                )
-                deadline = dep - timedelta(hours=GRACE_HOURS)
-                solar_before, detail_ok = self._solar_before_dep(now, deadline)
-            except (ValueError, TypeError):
-                solar_before, detail_ok = 0.0, False
+        _, deadline = parse_departure(now, dep_time, dep_date)
+        if deadline is not None:
+            solar_before, detail_ok = self._solar_before_dep(now, deadline)
 
         # Fase / ampère toestand.
         current_phase = 1 if self._is_on(CONF_SINGLE_PHASE_SWITCH) else 3
-        current_amps = int(self._num(CONF_CHARGE_LIMIT_NUMBER, min_a) or min_a)
+        current_amps = int(self._num(CONF_CHARGE_LIMIT_NUMBER) or min_a)
 
         # Fase C-E: geleerde signalen + afgeleide ramp-bias uit de hit-rate.
         learned = self.learned
@@ -398,7 +406,6 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             solar_ok=solar_ok,
             solar_detail_ok=detail_ok,
             solar_before_dep_kwh=solar_before,
-            pv_production_w=pv_prod,
             grid_w=grid_w,
             grid_ok=grid_ok,
             grid_avg_w=grid_avg if grid_avg is not None else grid_w,
@@ -439,7 +446,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         if decision.update_wpa:
             self._set_state(ST_WPA_STORED, clamp(decision.wpa_new, WPA_MIN, WPA_MAX))
         await self._handle_faults(inp, now, regelen)
-        await self._handle_departure(decision, now, regelen)
+        await self._handle_departure(decision, now)
         if regelen and not decision.dep_reset_needed:
             await self._apply_control(inp, decision, now)
 
@@ -473,7 +480,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
                 preclimate_active=inp.preclimate_active,
             )
             if res.updated:
-                await self.async_set_setting(
+                self._apply_setting(
                     SET_ACCU_CAPACITEIT_KWH, round(res.updated_capacity, 2)
                 )
                 await self._notify(
@@ -508,6 +515,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         )
         if fault_stable_clear and attempts > 0:
             self._set_state(ST_RESTART_ATTEMPTS, 0)
+            self._stranded_notified = False
             await self._dismiss("peblar_lader_gestrand")
 
         # In observe-only mode niet herstarten en geen gestrand-status bijhouden.
@@ -527,13 +535,15 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         if charger_stranded:
             if self._is_on(CONF_CHARGE_SWITCH):
                 await self._service("switch", "turn_off", CONF_CHARGE_SWITCH)
-            await self._notify(
-                "peblar_lader_gestrand",
-                "Peblar lader gestopt - storing blijft",
-                f"De lader is {MAX_RESTART_POGINGEN}x herstart maar de "
-                f"{'fout' if err_active else 'waarschuwing'} blijft. Laden gestopt "
-                "uit veiligheid; los de storing handmatig op.",
-            )
+            if not self._stranded_notified:
+                self._stranded_notified = True
+                await self._notify(
+                    "peblar_lader_gestrand",
+                    "Peblar lader gestopt - storing blijft",
+                    f"De lader is {MAX_RESTART_POGINGEN}x herstart maar de "
+                    f"{'fout' if err_active else 'waarschuwing'} blijft. Laden gestopt "
+                    "uit veiligheid; los de storing handmatig op.",
+                )
             return
 
         if restart_needed:
@@ -551,15 +561,13 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
     # ------------------------------------------------------------------
     # Vertrekdatum-beheer
     # ------------------------------------------------------------------
-    async def _handle_departure(
-        self, d: ChargeDecision, now: datetime, regelen: bool
-    ) -> None:
+    async def _handle_departure(self, d: ChargeDecision, now: datetime) -> None:
         if d.dep_reset_needed:
-            await self.async_set_setting(SET_VERTREKTIJD, "00:00:00")
+            self._apply_setting(SET_VERTREKTIJD, "00:00:00")
             self._time_changed_flag = False
-            await self.async_set_setting(SET_VERTREKDATUM, now.strftime("%Y-%m-%d"))
+            self._apply_setting(SET_VERTREKDATUM, now.strftime("%Y-%m-%d"))
         elif d.dep_date_needs_update and d.desired_dep_date:
-            await self.async_set_setting(SET_VERTREKDATUM, d.desired_dep_date)
+            self._apply_setting(SET_VERTREKDATUM, d.desired_dep_date)
 
     # ------------------------------------------------------------------
     # Regelacties toepassen (achter observe-only gate)
@@ -569,14 +577,14 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
     ) -> None:
         min_a = inp.min_a
 
-        # Rust-stand: lader suspended en niet onze auto -> 1 fase + min A.
-        if d.peb_status == "suspended" and not d.my_car_here and not inp.other_car:
+        # Rust-stand: lader suspended en geen auto aangesloten -> 1 fase + min A.
+        if d.peb_status == "suspended" and not d.car_here:
             if not self._is_on(CONF_SINGLE_PHASE_SWITCH):
                 await self._service("switch", "turn_on", CONF_SINGLE_PHASE_SWITCH)
-            await self._set_number(clamp(min(min_a, 16), 6, 16))
+            await self._set_number(min_a)
             return
 
-        if not d.my_car_here:
+        if not d.car_here:
             return
 
         # Laadbehoefte-timestamp bijwerken.
@@ -596,7 +604,8 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         if not d.want_charge:
             return
 
-        # Ampère / fase toepassen.
+        # Eerst de ampères terug (calc zet die op min bij een fasewissel), daarna
+        # pas schakelen: zo maakt de lader de wissel op het laagste vermogen.
         if d.phase_change_needed or d.amps_change_needed:
             await self._set_number(d.amps_set)
             self._set_state(ST_LAST_AMP_CHANGE, now.isoformat())
@@ -616,7 +625,6 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
                 await self._service("switch", "turn_on", CONF_SINGLE_PHASE_SWITCH)
             elif d.desired_phase == 3:
                 await self._service("switch", "turn_off", CONF_SINGLE_PHASE_SWITCH)
-            await asyncio.sleep(PHASE_SETTLE_S)
 
     # ------------------------------------------------------------------
     # Service-/notificatiehelpers
@@ -729,6 +737,18 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("peblar_slim_laden: forecast-capture mislukt: %s", err)
 
+    async def async_capture_forecast_today(self) -> None:
+        """Leg de dagvoorspelling vast (eerste schrijving per dag wint)."""
+        fc = self._num(CONF_SOLCAST_TODAY)
+        if fc is not None:
+            await self.async_forecast_capture(fc, None)
+
+    async def async_capture_actual_today(self) -> None:
+        """Leg de werkelijke dagopbrengst vast."""
+        act = self._num(CONF_PV_DAILY_ENERGY)
+        if act is not None:
+            await self.async_forecast_capture(None, act)
+
     async def async_refresh_learned(self, _now=None) -> None:
         """Lees geleerde signalen uit de DB en klem ze (Fase C-E)."""
         db_url = self.conf.get(CONF_DB_URL)
@@ -757,4 +777,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         self.learned = learned
         _LOGGER.debug("peblar_slim_laden: geleerde waarden bijgewerkt: %s", learned)
 
-    db_status: str = "unknown"
+    async def async_close_db(self) -> None:
+        """Sluit de hergebruikte DB-verbinding (bij unload)."""
+        if self.conf.get(CONF_DB_URL):
+            await self.hass.async_add_executor_job(db.close_connection)

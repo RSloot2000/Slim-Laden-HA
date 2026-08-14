@@ -25,6 +25,7 @@ async def async_setup_entry(
 
 class PeblarVertrektijd(PeblarEntity, TimeEntity):
     _attr_name = "Vertrektijd"
+    _attr_translation_key = SET_VERTREKTIJD
     _attr_icon = "mdi:clock-outline"
 
     def __init__(self, coordinator: PeblarCoordinator) -> None:

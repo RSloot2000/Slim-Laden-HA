@@ -23,6 +23,7 @@ async def async_setup_entry(
 
 class PeblarLaadmodusSelect(PeblarEntity, SelectEntity):
     _attr_name = "Laadmodus"
+    _attr_translation_key = SET_LAADMODUS
     _attr_icon = "mdi:ev-station"
     _attr_options = LAADMODI
 

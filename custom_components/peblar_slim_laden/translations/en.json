@@ -32,6 +32,9 @@
     },
     "abort": {
       "already_configured": "Peblar Smart Charging is already configured."
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the database (check URL, credentials and whether the peb_ schema exists)."
     }
   },
   "options": {
@@ -64,6 +67,71 @@
           "db_url": "TimescaleDB URL"
         }
       }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the database (check URL, credentials and whether the peb_ schema exists)."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "behind_schedule": { "name": "Behind schedule" },
+      "want_charge": { "name": "Charge demand" },
+      "car_here": { "name": "Car connected" },
+      "solar_pause": { "name": "Charging paused (waiting for sun)" },
+      "solar_only": { "name": "Solar surplus only" }
+    },
+    "sensor": {
+      "soc_now": { "name": "SoC now" },
+      "kwh_needed": { "name": "Energy needed" },
+      "hours_left": { "name": "Hours until deadline" },
+      "amps_set": { "name": "Amperage set" },
+      "charger_w": { "name": "Charge power" },
+      "grid_w": { "name": "Grid power" },
+      "pv_now_w": { "name": "PV now" },
+      "available_solar_w": { "name": "Available solar surplus" },
+      "base_floor_w": { "name": "Grid floor" },
+      "must_charge_w": { "name": "Must charge" },
+      "target_w": { "name": "Target" },
+      "ramp_factor": { "name": "Ramp factor" },
+      "urgentie": { "name": "Urgency" },
+      "real_w_per_a": { "name": "W per A (learned)" },
+      "wpa_meas": { "name": "W per A (measured)" },
+      "expected_solar_kwh": { "name": "Expected solar" },
+      "desired_phase": { "name": "Desired phase" },
+      "current_phase": { "name": "Current phase" },
+      "laadmodus_actief": { "name": "Charge mode (active)" },
+      "db_status": { "name": "DB status" },
+      "forecast_bias": { "name": "Forecast bias (learned)" },
+      "kwh_per_pct": { "name": "kWh per % (learned)" },
+      "wpa_1p": { "name": "W per A single phase (learned)" },
+      "wpa_3p": { "name": "W per A three phase (learned)" },
+      "hit_rate": { "name": "Target SoC hit rate (learned)" }
+    },
+    "number": {
+      "doel_soc": { "name": "Target SoC" },
+      "accu_capaciteit_kwh": { "name": "Battery capacity" },
+      "pv_marge_watt": { "name": "PV margin" },
+      "laadvermogen_min_a": { "name": "Charge current min" },
+      "laadvermogen_max_a": { "name": "Charge current max" },
+      "zon_benut_factor": { "name": "Solar utilisation factor" },
+      "fasewissel_min_minuten": { "name": "Phase switch min interval" }
+    },
+    "switch": {
+      "regelen_actief": { "name": "Control active" },
+      "slim_laden_aan": { "name": "Smart charging on" },
+      "laadlimiet_override": { "name": "Charge limit override" },
+      "andere_auto_aan_lader": { "name": "Other car connected" },
+      "dagelijkse_vertrektijd": { "name": "Daily departure time" },
+      "peblar_debug": { "name": "Debug notifications" }
+    },
+    "select": {
+      "laadmodus": { "name": "Charge mode" }
+    },
+    "time": {
+      "vertrektijd": { "name": "Departure time" }
+    },
+    "date": {
+      "vertrekdatum": { "name": "Departure date" }
     }
   }
 }

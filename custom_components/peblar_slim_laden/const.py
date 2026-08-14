@@ -6,15 +6,6 @@ from datetime import timedelta
 
 DOMAIN = "peblar_slim_laden"
 
-PLATFORMS: list[str] = [
-    "sensor",
-    "number",
-    "select",
-    "switch",
-    "time",
-    "date",
-]
-
 # ---------------------------------------------------------------------------
 # Config-flow keys: externe (device/integratie) entiteiten die de integratie
 # consumeert of aanstuurt. Alle instel-helpers levert de integratie zelf.
@@ -89,6 +80,9 @@ SET_ACCU_CAPACITEIT_KWH = "accu_capaciteit_kwh"
 SET_PV_MARGE_WATT = "pv_marge_watt"
 SET_MIN_A = "laadvermogen_min_a"
 SET_MAX_A = "laadvermogen_max_a"
+# Aandeel van de voorspelde PV-opbrengst dat als overschot voor de auto
+# beschikbaar komt (de rest gaat naar het huisverbruik). Dit is iets anders dan
+# de geleerde forecast_bias, die de voorspelling zelf corrigeert.
 SET_ZON_BENUT_FACTOR = "zon_benut_factor"
 SET_FASEWISSEL_MIN_MINUTEN = "fasewissel_min_minuten"
 SET_VERTREKTIJD = "vertrektijd"
@@ -152,20 +146,32 @@ DEFAULT_STATE: dict = {
 # Regelparameters (vaste constanten uit de oorspronkelijke automation).
 # ---------------------------------------------------------------------------
 GRACE_HOURS = 0.25
+# Harde grenzen van de lader zelf (onafhankelijk van het aantal fasen).
+HW_MIN_A = 6
+HW_MAX_A = 16
+NOMINAL_W_PER_A = 230             # nominaal W per ampère per fase (230 V)
 WPA_MIN = 150.0
 WPA_MAX = 250.0
 WPA_VALID_MIN = 200.0
 WPA_VALID_MAX = 240.0
 WPA_EMA_ALPHA = 0.3               # nieuw gewicht (0.7 oud + 0.3 nieuw)
+WPA_LEARN_MAX_SOC = 85.0          # boven deze SoC begrenst de auto zelf -> niet leren
 MEAS_SETTLE_S = 15
 AMP_SETTLE_S = 30
 PHASE_UP_BUFFER_W = 150
 EMERGENCY_IMPORT_W = 400
 CHARGE_SWITCH_MIN_MINUTEN = 5
 STOP_GRACE_MINUTEN = 3
-PHASE_SETTLE_S = 3
 CHARGING_ACTIVE_W = 500
-PRECLIMATE_POWER_W = 3500         # zelfbegrenzing auto bij vol + preclimate
+PRECLIMATE_POWER_W = 3500.0       # zelfbegrenzing auto bij vol + preclimate
+# Deel van de voorspelde zon waarop de nachtplanning durft te rekenen. Onder de
+# 1.0 houden we een marge aan voor een tegenvallende dag; boven het tekort is
+# er geen netvloer nodig en pauzeert het laden tot de zon er is.
+SOLAR_TRUST_FACTOR = 0.8
+
+# Waarden die "geen vertrektijd/-datum ingesteld" betekenen.
+NO_VALUE_STRINGS: tuple = ("", "unknown", "unavailable", None)
+NO_DEPARTURE_TIME: str = "00:00:00"
 
 # Storing/herstart
 WARN_RESTART_MIN_MINUTEN = 20
@@ -175,8 +181,14 @@ MAX_RESTART_POGINGEN = 3
 FAULT_CLEAR_STABIEL_MINUTEN = 10
 
 # Coordinator
-UPDATE_INTERVAL = timedelta(minutes=2)
-DEBOUNCE_SECONDS = 8
+UPDATE_INTERVAL = timedelta(seconds=60)
+# Minimale tijd tussen twee regelcycli die door bronwijzigingen worden getriggerd.
+# Dit is een throttle (geen resettende debounce): een snel updatende P1-meter mag
+# de regellus niet eindeloos uitstellen.
+DEBOUNCE_SECONDS = 10
+# Venster waarover grid-/laadvermogen gemiddeld wordt voor de fasekeuze.
+POWER_SAMPLE_WINDOW = timedelta(minutes=2)
+POWER_SAMPLE_MAXLEN = 240
 
 # Leerlaag (Fase C-E): periodieke DB-uitlezing + clamps op geleerde waarden.
 LEARN_REFRESH_INTERVAL = timedelta(minutes=30)
@@ -197,12 +209,4 @@ CYCLE_COLS: list[str] = [
     "urgentie", "must_charge_w", "target_w", "real_w_per_a", "wpa_meas",
     "wpa_meas_valid", "expected_solar_kwh", "behind_schedule",
     "session_energy_kwh",
-]
-
-# Observability-sensoren (suffix -> databron in de decision/telemetrie).
-SENSOR_NUM: list[str] = [
-    "soc_now", "kwh_needed", "hours_left", "amps_set", "charger_w", "grid_w",
-    "pv_now_w", "available_solar_w", "base_floor_w", "ramp_factor", "urgentie",
-    "must_charge_w", "target_w", "real_w_per_a", "wpa_meas",
-    "expected_solar_kwh", "desired_phase", "current_phase",
 ]

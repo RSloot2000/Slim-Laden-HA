@@ -6,20 +6,42 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
-from homeassistant.util import dt as dt_util
 
-from .const import (
-    CONF_PV_DAILY_ENERGY,
-    CONF_SOLCAST_TODAY,
-    DOMAIN,
-    LEARN_REFRESH_INTERVAL,
-    PLATFORMS,
-)
+from .const import DOMAIN, LEARN_REFRESH_INTERVAL
 from .coordinator import PeblarCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.DATE,
+    Platform.NUMBER,
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.SWITCH,
+    Platform.TIME,
+]
+
+# Entiteiten uit oudere versies die naar een ander platform verhuisd zijn.
+_MOVED_ENTITIES: list[tuple[str, str]] = [
+    (Platform.SENSOR, "behind_schedule"),
+]
+
+
+@callback
+def _async_cleanup_moved_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Verwijder registry-resten van entiteiten die van platform gewisseld zijn."""
+    registry = er.async_get(hass)
+    for domain, key in _MOVED_ENTITIES:
+        entity_id = registry.async_get_entity_id(
+            domain, DOMAIN, f"{entry.entry_id}_{key}"
+        )
+        if entity_id:
+            registry.async_remove(entity_id)
+            _LOGGER.debug("peblar_slim_laden: oude entiteit %s verwijderd", entity_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -33,6 +55,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
+    _async_cleanup_moved_entities(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Geleerde signalen periodiek verversen.
@@ -50,23 +73,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_track_time_change(hass, _sessions, minute=range(0, 60, 10), second=0)
     )
 
-    # Forecast vastleggen: 00:10 (voorspelling) en 23:55 (werkelijk).
+    # Forecast vastleggen: 's ochtends de voorspelling, 's avonds het resultaat.
+    # De upsert houdt de eerste voorspelling van de dag vast, dus een herstart of
+    # een late Solcast-update overschrijft de vergelijking niet.
     async def _forecast_morning(_now) -> None:
-        fc = coordinator._num(CONF_SOLCAST_TODAY)
-        if fc is not None:
-            await coordinator.async_forecast_capture(fc, None)
+        await coordinator.async_capture_forecast_today()
 
     async def _forecast_actual(_now) -> None:
-        act = coordinator._num(CONF_PV_DAILY_ENERGY)
-        if act is not None:
-            await coordinator.async_forecast_capture(None, act)
+        await coordinator.async_capture_actual_today()
 
     entry.async_on_unload(
-        async_track_time_change(hass, _forecast_morning, hour=0, minute=10, second=0)
+        async_track_time_change(hass, _forecast_morning, hour=6, minute=0, second=0)
     )
     entry.async_on_unload(
         async_track_time_change(hass, _forecast_actual, hour=23, minute=55, second=0)
     )
+    # Inhaalslag na een herstart: ontbreekt de voorspelling van vandaag nog, dan
+    # wordt hij alsnog vastgelegd.
+    await coordinator.async_capture_forecast_today()
 
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
@@ -76,9 +100,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Verwijder een config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        coordinator: PeblarCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
-        coordinator.shutdown()
-        await coordinator.async_save_store()
+        coordinator: PeblarCoordinator | None = hass.data.get(DOMAIN, {}).pop(
+            entry.entry_id, None
+        )
+        if coordinator is not None:
+            coordinator.shutdown()
+            await coordinator.async_save_store()
+            await coordinator.async_close_db()
+        if not hass.data.get(DOMAIN):
+            hass.data.pop(DOMAIN, None)
     return unload_ok
 
 

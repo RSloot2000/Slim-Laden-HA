@@ -25,6 +25,7 @@ async def async_setup_entry(
 
 class PeblarVertrekdatum(PeblarEntity, DateEntity):
     _attr_name = "Vertrekdatum"
+    _attr_translation_key = SET_VERTREKDATUM
     _attr_icon = "mdi:calendar"
 
     def __init__(self, coordinator: PeblarCoordinator) -> None:

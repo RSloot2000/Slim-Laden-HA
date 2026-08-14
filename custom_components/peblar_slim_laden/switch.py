@@ -31,26 +31,32 @@ class PeblarSwitchDescription(SwitchEntityDescription):
 SWITCHES: tuple[PeblarSwitchDescription, ...] = (
     PeblarSwitchDescription(
         key=SET_REGELEN_ACTIEF, setting_key=SET_REGELEN_ACTIEF,
+        translation_key=SET_REGELEN_ACTIEF,
         name="Regelen actief", icon="mdi:robot",
     ),
     PeblarSwitchDescription(
         key=SET_SLIM_LADEN_AAN, setting_key=SET_SLIM_LADEN_AAN,
+        translation_key=SET_SLIM_LADEN_AAN,
         name="Slim laden aan", icon="mdi:lightning-bolt",
     ),
     PeblarSwitchDescription(
         key=SET_LAADLIMIET_OVERRIDE, setting_key=SET_LAADLIMIET_OVERRIDE,
+        translation_key=SET_LAADLIMIET_OVERRIDE,
         name="Laadlimiet override",
     ),
     PeblarSwitchDescription(
         key=SET_ANDERE_AUTO, setting_key=SET_ANDERE_AUTO,
+        translation_key=SET_ANDERE_AUTO,
         name="Andere auto aan lader",
     ),
     PeblarSwitchDescription(
         key=SET_DAGELIJKSE_VERTREKTIJD, setting_key=SET_DAGELIJKSE_VERTREKTIJD,
+        translation_key=SET_DAGELIJKSE_VERTREKTIJD,
         name="Dagelijkse vertrektijd",
     ),
     PeblarSwitchDescription(
-        key=SET_DEBUG, setting_key=SET_DEBUG, name="Debug-meldingen",
+        key=SET_DEBUG, setting_key=SET_DEBUG, translation_key=SET_DEBUG,
+        name="Debug-meldingen",
     ),
 )
 

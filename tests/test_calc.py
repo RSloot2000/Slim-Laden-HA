@@ -78,7 +78,7 @@ d = compute(
     )
 )
 check("Hybride deadline: behind_schedule", d.behind_schedule)
-check("Hybride deadline: must_charge noodstop", d.must_charge_w == 999999)
+check("Hybride deadline: must_charge vol vermogen", d.must_charge_w == 16 * 3 * 230)
 
 # 4) Preclimate: laden aanhouden ook al is de auto vol (soc==target).
 d = compute(
@@ -188,6 +188,110 @@ _base = dict(
 d0 = compute(ChargeInputs(ramp_bias=0.0, **_base))
 d1 = compute(ChargeInputs(ramp_bias=0.15, **_base))
 check("ramp_bias verhoogt (of gelijk) ramp_factor", d1.ramp_factor >= d0.ramp_factor)
+
+# 14) Zon + bewolking op 3 fasen met net-import -> direct terug naar 1 fase.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zon", soc_raw=50, current_phase=3, grid_ok=True,
+        charger_w=4140, charger_avg_w=4140, grid_w=700, grid_avg_w=700,
+    )
+)
+check("Bewolking: terug naar 1 fase", d.desired_phase == 1 and d.phase_change_needed)
+
+# 15) Hybride met vertrektijd morgen: de voorspelde zon dekt de behoefte ruim ->
+#     laadpauze, geen netvloer.
+TOMORROW = (NOW + timedelta(days=1)).date().strftime("%Y-%m-%d")
+_hybride = dict(
+    now=NOW, laadmodus="Hybride", soc_raw=50, soc_target=100,
+    battery_capacity_kwh=50, dep_time="14:00:00", dep_date=TOMORROW,
+    solar_detail_ok=True, zon_benut_factor=1.0, grid_ok=True,
+)
+d = compute(ChargeInputs(solar_before_dep_kwh=40, **_hybride))
+check("Hybride/veel zon: geen netvloer", d.base_floor_w == 0)
+check("Hybride/veel zon: must_charge 0", d.must_charge_w == 0)
+check("Hybride/veel zon: laadpauze", d.solar_pause is True)
+check("Hybride/veel zon: niet laden", d.want_charge is False)
+
+# 16) Zelfde situatie met te weinig zon: 's nachts doorladen op minimaal niveau.
+d = compute(ChargeInputs(solar_before_dep_kwh=5, **_hybride))
+check("Hybride/weinig zon: netvloer > 0", d.base_floor_w > 0)
+check("Hybride/weinig zon: laden", d.want_charge is True)
+check("Hybride/weinig zon: 1 fase", d.desired_phase == 1)
+check("Hybride/weinig zon: minimale ampère", d.amps_set == 6)
+check("Hybride/weinig zon: geen laadpauze", d.solar_pause is False)
+
+# 17) Overdag met overschot volgt Hybride gewoon de zon.
+d = compute(
+    ChargeInputs(
+        solar_before_dep_kwh=40, charger_w=0, grid_w=-5000,
+        charger_avg_w=0, grid_avg_w=-5000, **_hybride
+    )
+)
+check("Hybride/overschot: laden", d.want_charge is True)
+check("Hybride/overschot: target volgt zon", abs(d.target_w - 4950) < 1)
+
+# 18) Hybride zonder vertrektijd gedraagt zich als Zon.
+d = compute(
+    ChargeInputs(now=NOW, laadmodus="Hybride", soc_raw=50, grid_ok=True)
+)
+check("Hybride zonder vertrek: solar_only", d.solar_only is True)
+
+# 19) Zon zonder overschot: niet laden.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zon", soc_raw=50, soc_target=100, grid_ok=True,
+        charger_w=0, grid_w=200,
+    )
+)
+check("Zon zonder overschot: available 0", d.available_solar_w == 0)
+check("Zon zonder overschot: niet laden", d.want_charge is False)
+
+# 20) Netmeter uitgevallen: geen aantoonbaar overschot (nooit op netimport laden).
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zon", soc_raw=50, grid_ok=False, pv_now_w=3000,
+    )
+)
+check("Geen netmeter: available 0", d.available_solar_w == 0)
+check("Geen netmeter: niet laden", d.want_charge is False)
+
+# 21) Andere auto aan de lader: alle slimme logica uit, vol vermogen.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zon", other_car=True, peb_status="suspended",
+        soc_raw=None, max_a=16,
+    )
+)
+check("Andere auto: forced_full", d.forced_full is True)
+check("Andere auto: car_here", d.car_here is True)
+check("Andere auto: niet als eigen auto geteld", d.my_car_here is False)
+check("Andere auto: 3 fasen", d.desired_phase == 3)
+check("Andere auto: max ampère", d.amps_set == 16)
+
+# 22) Onzinnige grenzen (min > max) leveren nog steeds een geldige ampèrewaarde.
+d = compute(ChargeInputs(now=NOW, laadmodus="Snel", soc_raw=50, min_a=16, max_a=6))
+check("min>max: ampère binnen 6..16", 6 <= d.amps_set <= 16)
+
+# 23) W/A-leren onderdrukt bij hoge SoC (auto begrenst dan zelf).
+d = compute(
+    ChargeInputs(
+        now=NOW, peb_status="charging", charge_power_now_w=16 * 1 * 225,
+        current_amps=16, current_phase=1, seconds_since_amp_change=60,
+        soc_raw=95,
+    )
+)
+check("Hoge SoC: W/A-meting ongeldig", d.wpa_meas_valid is False)
+
+# 15) Deadline-modus blijft op 3 fasen ondanks net-import.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Hybride", soc_raw=20, soc_target=100,
+        dep_time=(NOW + timedelta(hours=1)).strftime("%H:%M:%S"),
+        dep_date=NOW.date().strftime("%Y-%m-%d"),
+        current_phase=3, grid_ok=True, grid_w=700,
+    )
+)
+check("Deadline: blijft op 3 fasen", d.desired_phase == 3)
 
 print()
 if FAILS:

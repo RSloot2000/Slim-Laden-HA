@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -26,12 +26,15 @@ from .entity import PeblarEntity
 class PeblarSensorDescription(SensorEntityDescription):
     """Beschrijving met een waarde-extractor uit de ChargeDecision."""
 
-    value_fn: Callable[[ChargeDecision, PeblarCoordinator], object] = None
+    value_fn: Callable[[ChargeDecision | None, PeblarCoordinator], object]
+    # False voor sensoren die ook zonder regelcyclus een waarde hebben.
+    needs_decision: bool = True
 
 
 def _power(key: str, name: str) -> PeblarSensorDescription:
     return PeblarSensorDescription(
         key=key,
+        translation_key=key,
         name=name,
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
@@ -43,22 +46,23 @@ def _power(key: str, name: str) -> PeblarSensorDescription:
 
 SENSORS: tuple[PeblarSensorDescription, ...] = (
     PeblarSensorDescription(
-        key="soc_now", name="SoC nu", native_unit_of_measurement="%",
+        key="soc_now", translation_key="soc_now", name="SoC nu",
+        native_unit_of_measurement="%",
         state_class=SensorStateClass.MEASUREMENT, suggested_display_precision=1,
         value_fn=lambda d, c: d.soc_now,
     ),
     PeblarSensorDescription(
-        key="kwh_needed", name="Benodigde energie",
+        key="kwh_needed", translation_key="kwh_needed", name="Benodigde energie",
         native_unit_of_measurement="kWh", suggested_display_precision=2,
         value_fn=lambda d, c: d.kwh_needed,
     ),
     PeblarSensorDescription(
-        key="hours_left", name="Uren tot deadline",
+        key="hours_left", translation_key="hours_left", name="Uren tot deadline",
         native_unit_of_measurement="h", suggested_display_precision=2,
         value_fn=lambda d, c: d.hours_left,
     ),
     PeblarSensorDescription(
-        key="amps_set", name="Ampère ingesteld",
+        key="amps_set", translation_key="amps_set", name="Ampère ingesteld",
         native_unit_of_measurement="A", state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d, c: d.amps_set,
     ),
@@ -70,71 +74,78 @@ SENSORS: tuple[PeblarSensorDescription, ...] = (
     _power("must_charge_w", "Must-charge"),
     _power("target_w", "Target"),
     PeblarSensorDescription(
-        key="ramp_factor", name="Ramp-factor", suggested_display_precision=2,
+        key="ramp_factor", translation_key="ramp_factor", name="Ramp-factor",
+        suggested_display_precision=2,
         value_fn=lambda d, c: d.ramp_factor,
     ),
     PeblarSensorDescription(
-        key="urgentie", name="Urgentie", suggested_display_precision=2,
+        key="urgentie", translation_key="urgentie", name="Urgentie",
+        suggested_display_precision=2,
         value_fn=lambda d, c: d.urgentie,
     ),
     PeblarSensorDescription(
-        key="real_w_per_a", name="W per A (geleerd)",
+        key="real_w_per_a", translation_key="real_w_per_a",
+        name="W per A (geleerd)",
         native_unit_of_measurement="W/A", suggested_display_precision=0,
         value_fn=lambda d, c: d.real_w_per_a,
     ),
     PeblarSensorDescription(
-        key="wpa_meas", name="W per A (gemeten)",
+        key="wpa_meas", translation_key="wpa_meas", name="W per A (gemeten)",
         native_unit_of_measurement="W/A", suggested_display_precision=0,
         value_fn=lambda d, c: d.wpa_meas,
     ),
     PeblarSensorDescription(
-        key="expected_solar_kwh", name="Verwachte zon",
+        key="expected_solar_kwh", translation_key="expected_solar_kwh",
+        name="Verwachte zon",
         native_unit_of_measurement="kWh", suggested_display_precision=1,
         value_fn=lambda d, c: d.expected_solar_kwh,
     ),
     PeblarSensorDescription(
-        key="desired_phase", name="Gewenste fase",
+        key="desired_phase", translation_key="desired_phase", name="Gewenste fase",
         value_fn=lambda d, c: d.desired_phase,
     ),
     PeblarSensorDescription(
-        key="current_phase", name="Huidige fase",
+        key="current_phase", translation_key="current_phase", name="Huidige fase",
         value_fn=lambda d, c: d.current_phase,
     ),
     PeblarSensorDescription(
-        key="laadmodus_actief", name="Laadmodus (actief)",
+        key="laadmodus_actief", translation_key="laadmodus_actief",
+        name="Laadmodus (actief)",
         value_fn=lambda d, c: d.laadmodus,
     ),
     PeblarSensorDescription(
-        key="behind_schedule", name="Achter op schema",
-        value_fn=lambda d, c: "on" if d.behind_schedule else "off",
-    ),
-    PeblarSensorDescription(
-        key="db_status", name="DB-status",
+        key="db_status", translation_key="db_status", name="DB-status",
+        needs_decision=False,
         value_fn=lambda d, c: c.db_status,
     ),
     # Geleerde signalen uit de database (Fase C-E).
     PeblarSensorDescription(
-        key="forecast_bias", name="Forecast-bias (geleerd)",
+        key="forecast_bias", translation_key="forecast_bias",
+        name="Forecast-bias (geleerd)", needs_decision=False,
         suggested_display_precision=2,
         value_fn=lambda d, c: c.learned.get("forecast_bias"),
     ),
     PeblarSensorDescription(
-        key="kwh_per_pct", name="kWh per % (geleerd)",
+        key="kwh_per_pct", translation_key="kwh_per_pct",
+        name="kWh per % (geleerd)", needs_decision=False,
         native_unit_of_measurement="kWh", suggested_display_precision=3,
         value_fn=lambda d, c: c.learned.get("kwh_per_pct"),
     ),
     PeblarSensorDescription(
-        key="wpa_1p", name="W per A 1-fase (geleerd)",
+        key="wpa_1p", translation_key="wpa_1p", name="W per A 1-fase (geleerd)",
+        needs_decision=False,
         native_unit_of_measurement="W/A", suggested_display_precision=0,
         value_fn=lambda d, c: c.learned.get("wpa_1p"),
     ),
     PeblarSensorDescription(
-        key="wpa_3p", name="W per A 3-fase (geleerd)",
+        key="wpa_3p", translation_key="wpa_3p", name="W per A 3-fase (geleerd)",
+        needs_decision=False,
         native_unit_of_measurement="W/A", suggested_display_precision=0,
         value_fn=lambda d, c: c.learned.get("wpa_3p"),
     ),
     PeblarSensorDescription(
-        key="hit_rate", name="Doel-SoC hitrate (geleerd)",
+        key="hit_rate", translation_key="hit_rate",
+        name="Doel-SoC hitrate (geleerd)", needs_decision=False,
         native_unit_of_measurement="%", suggested_display_precision=0,
         value_fn=lambda d, c: (
             None if c.learned.get("hit_rate") is None
@@ -166,7 +177,13 @@ class PeblarSensor(PeblarEntity, SensorEntity):
         self._attr_unique_id = f"{coordinator.entry.entry_id}_{description.key}"
 
     @property
+    def available(self) -> bool:
+        if self.entity_description.needs_decision:
+            return super().available and self.coordinator.data is not None
+        return super().available
+
+    @property
     def native_value(self):
-        if self.coordinator.data is None:
+        if self.entity_description.needs_decision and self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data, self.coordinator)

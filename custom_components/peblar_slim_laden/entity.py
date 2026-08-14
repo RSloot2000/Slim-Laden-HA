@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -22,3 +22,11 @@ class PeblarEntity(CoordinatorEntity[PeblarCoordinator]):
             manufacturer="Peblar",
             model="Slim laden regelaar",
         )
+
+
+class PeblarDecisionEntity(PeblarEntity):
+    """Entiteit die een waarde uit de laatste regelcyclus toont."""
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.coordinator.data is not None

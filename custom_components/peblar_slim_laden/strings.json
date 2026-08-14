@@ -32,6 +32,9 @@
     },
     "abort": {
       "already_configured": "Peblar Slim Laden is al geconfigureerd."
+    },
+    "error": {
+      "cannot_connect": "Verbinden met de database mislukt (controleer URL, inloggegevens en of het peb_-schema bestaat)."
     }
   },
   "options": {
@@ -64,6 +67,71 @@
           "db_url": "TimescaleDB URL"
         }
       }
+    },
+    "error": {
+      "cannot_connect": "Verbinden met de database mislukt (controleer URL, inloggegevens en of het peb_-schema bestaat)."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "behind_schedule": { "name": "Achter op schema" },
+      "want_charge": { "name": "Laadbehoefte" },
+      "car_here": { "name": "Auto aangesloten" },
+      "solar_pause": { "name": "Laadpauze (wacht op zon)" },
+      "solar_only": { "name": "Alleen zonoverschot" }
+    },
+    "sensor": {
+      "soc_now": { "name": "SoC nu" },
+      "kwh_needed": { "name": "Benodigde energie" },
+      "hours_left": { "name": "Uren tot deadline" },
+      "amps_set": { "name": "Ampère ingesteld" },
+      "charger_w": { "name": "Laadvermogen" },
+      "grid_w": { "name": "Netvermogen" },
+      "pv_now_w": { "name": "PV nu" },
+      "available_solar_w": { "name": "Beschikbaar zonoverschot" },
+      "base_floor_w": { "name": "Grid-vloer" },
+      "must_charge_w": { "name": "Must-charge" },
+      "target_w": { "name": "Target" },
+      "ramp_factor": { "name": "Ramp-factor" },
+      "urgentie": { "name": "Urgentie" },
+      "real_w_per_a": { "name": "W per A (geleerd)" },
+      "wpa_meas": { "name": "W per A (gemeten)" },
+      "expected_solar_kwh": { "name": "Verwachte zon" },
+      "desired_phase": { "name": "Gewenste fase" },
+      "current_phase": { "name": "Huidige fase" },
+      "laadmodus_actief": { "name": "Laadmodus (actief)" },
+      "db_status": { "name": "DB-status" },
+      "forecast_bias": { "name": "Forecast-bias (geleerd)" },
+      "kwh_per_pct": { "name": "kWh per % (geleerd)" },
+      "wpa_1p": { "name": "W per A 1-fase (geleerd)" },
+      "wpa_3p": { "name": "W per A 3-fase (geleerd)" },
+      "hit_rate": { "name": "Doel-SoC hitrate (geleerd)" }
+    },
+    "number": {
+      "doel_soc": { "name": "Doel-SoC" },
+      "accu_capaciteit_kwh": { "name": "Accu-capaciteit" },
+      "pv_marge_watt": { "name": "PV-marge" },
+      "laadvermogen_min_a": { "name": "Laadvermogen min" },
+      "laadvermogen_max_a": { "name": "Laadvermogen max" },
+      "zon_benut_factor": { "name": "Zon benut-factor" },
+      "fasewissel_min_minuten": { "name": "Fasewissel min-interval" }
+    },
+    "switch": {
+      "regelen_actief": { "name": "Regelen actief" },
+      "slim_laden_aan": { "name": "Slim laden aan" },
+      "laadlimiet_override": { "name": "Laadlimiet override" },
+      "andere_auto_aan_lader": { "name": "Andere auto aan lader" },
+      "dagelijkse_vertrektijd": { "name": "Dagelijkse vertrektijd" },
+      "peblar_debug": { "name": "Debug-meldingen" }
+    },
+    "select": {
+      "laadmodus": { "name": "Laadmodus" }
+    },
+    "time": {
+      "vertrektijd": { "name": "Vertrektijd" }
+    },
+    "date": {
+      "vertrekdatum": { "name": "Vertrekdatum" }
     }
   }
 }

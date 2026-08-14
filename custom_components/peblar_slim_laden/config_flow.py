@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import (
-    ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
@@ -14,6 +14,7 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
+from . import db
 from .const import (
     CONF_CAR_SOC,
     CONF_CHARGE_LIMIT_NUMBER,
@@ -38,7 +39,11 @@ from .const import (
     CONF_SOLCAST_TODAY_REMAINING,
     CONF_SOLCAST_TOMORROW,
     DOMAIN,
+    OPTIONAL_ENTITY_KEYS,
+    REQUIRED_ENTITY_KEYS,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 # conf_key -> toegestane entity-domeinen voor de picker.
 _ENTITY_DOMAINS: dict[str, list[str]] = {
@@ -65,33 +70,6 @@ _ENTITY_DOMAINS: dict[str, list[str]] = {
     CONF_FC_NOW_POWER: ["sensor"],
 }
 
-_REQUIRED = [
-    CONF_CHARGER_STATUS,
-    CONF_CHARGER_POWER,
-    CONF_SESSION_ENERGY,
-    CONF_CHARGER_WARNINGS,
-    CONF_CHARGER_FAULTS,
-    CONF_CAR_SOC,
-    CONF_GRID_POWER,
-    CONF_PV_POWER,
-    CONF_CHARGE_SWITCH,
-    CONF_SINGLE_PHASE_SWITCH,
-    CONF_CHARGE_LIMIT_NUMBER,
-    CONF_RESTART_BUTTON,
-]
-
-_OPTIONAL = [
-    CONF_PRECLIMATE_SWITCH,
-    CONF_PV_DAILY_ENERGY,
-    CONF_SOLCAST_TODAY_REMAINING,
-    CONF_SOLCAST_TOMORROW,
-    CONF_SOLCAST_NOW_POWER,
-    CONF_SOLCAST_TODAY,
-    CONF_FC_TODAY_REMAINING,
-    CONF_FC_TOMORROW,
-    CONF_FC_NOW_POWER,
-]
-
 
 def _entity_selector(conf_key: str) -> selector.EntitySelector:
     return selector.EntitySelector(
@@ -101,14 +79,14 @@ def _entity_selector(conf_key: str) -> selector.EntitySelector:
 
 def _build_schema(defaults: dict[str, Any]) -> vol.Schema:
     fields: dict = {}
-    for key in _REQUIRED:
+    for key in REQUIRED_ENTITY_KEYS:
         marker = (
             vol.Required(key, default=defaults[key])
             if key in defaults
             else vol.Required(key)
         )
         fields[marker] = _entity_selector(key)
-    for key in _OPTIONAL:
+    for key in OPTIONAL_ENTITY_KEYS:
         marker = (
             vol.Optional(key, default=defaults[key])
             if key in defaults
@@ -120,10 +98,24 @@ def _build_schema(defaults: dict[str, Any]) -> vol.Schema:
         if CONF_DB_URL in defaults
         else vol.Optional(CONF_DB_URL)
     )
+    # De URL bevat het DB-wachtwoord: niet in platte tekst tonen.
     fields[db_marker] = selector.TextSelector(
-        selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+        selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
     )
     return vol.Schema(fields)
+
+
+async def _async_validate(hass, user_input: dict[str, Any]) -> dict[str, str]:
+    """Controleer de invoer; geeft een (lege) foutmap per veld terug."""
+    errors: dict[str, str] = {}
+    db_url = user_input.get(CONF_DB_URL)
+    if db_url:
+        try:
+            await hass.async_add_executor_job(db.validate_url, db_url)
+        except Exception as err:  # noqa: BLE001 - elke DB-fout is hier invoerfout
+            _LOGGER.debug("DB-validatie mislukt: %s", type(err).__name__)
+            errors[CONF_DB_URL] = "cannot_connect"
+    return errors
 
 
 class PeblarConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -134,32 +126,42 @@ class PeblarConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="Peblar Slim Laden", data=user_input)
+            errors = await _async_validate(self.hass, user_input)
+            if not errors:
+                return self.async_create_entry(
+                    title="Peblar Slim Laden", data=user_input
+                )
 
-        await self.async_set_unique_id(DOMAIN)
-        self._abort_if_unique_id_configured()
-        return self.async_show_form(step_id="user", data_schema=_build_schema({}))
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_build_schema(user_input or {}),
+            errors=errors,
+        )
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        return PeblarOptionsFlow(config_entry)
+    def async_get_options_flow(config_entry) -> OptionsFlow:
+        return PeblarOptionsFlow()
 
 
 class PeblarOptionsFlow(OptionsFlow):
     """Bewerk de gekoppelde entiteiten en db_url achteraf."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        self.config_entry = config_entry
-
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            errors = await _async_validate(self.hass, user_input)
+            if not errors:
+                return self.async_create_entry(title="", data=user_input)
 
-        defaults = {**self.config_entry.data, **self.config_entry.options}
+        defaults = user_input or {
+            **self.config_entry.data,
+            **self.config_entry.options,
+        }
         return self.async_show_form(
-            step_id="init", data_schema=_build_schema(defaults)
+            step_id="init", data_schema=_build_schema(defaults), errors=errors
         )
