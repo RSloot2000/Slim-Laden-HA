@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .const import (
+    AMP_OFFSET_A,
     AMP_SETTLE_S,
     CHARGE_SWITCH_MIN_MINUTEN,
     CHARGING_ACTIVE_W,
@@ -40,10 +41,10 @@ from .const import (
     NOMINAL_W_PER_A,
     PHASE_UP_BUFFER_W,
     PRECLIMATE_POWER_W,
+    SOC_RESTART_DEADBAND,
     SOLAR_TRUST_FACTOR,
     STOP_GRACE_MINUTEN,
     WPA_EMA_ALPHA,
-    WPA_LEARN_MAX_SOC,
     WPA_VALID_MAX,
     WPA_VALID_MIN,
 )
@@ -52,6 +53,24 @@ from .const import (
 def clamp(value: float, low: float, high: float) -> float:
     """Klem value tussen low en high (high wint als high < low)."""
     return max(low, min(high, value))
+
+
+def delivered_amps(setpoint_a: float) -> float:
+    """Ampères die de lader werkelijk trekt bij dit setpoint."""
+    return max(0.0, setpoint_a - AMP_OFFSET_A)
+
+
+def power_at(setpoint_a: float, phase: int, w_per_a: float) -> float:
+    """Vermogen dat dit setpoint oplevert."""
+    return delivered_amps(setpoint_a) * phase * w_per_a
+
+
+def setpoint_for(power_w: float, phase: int, w_per_a: float) -> int:
+    """Setpoint dat het gevraagde vermogen benadert."""
+    step = phase * w_per_a
+    if step <= 0:
+        return HW_MIN_A
+    return int(round(power_w / step)) + AMP_OFFSET_A
 
 
 def has_departure(dep_time: str | None) -> bool:
@@ -252,12 +271,16 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     d.soc_now = soc_now
 
     kwh_needed = 0.0
-    if soc_valid and inp.soc_target > soc_now:
+    soc_gap = (inp.soc_target - soc_now) if soc_valid else 0.0
+    # Staat het laden uit, dan pas hervatten na een merkbare terugval: anders
+    # start 1% ruis rond de doel-SoC het laden elke cooldown opnieuw.
+    min_gap = 0.0 if inp.charge_now_on else SOC_RESTART_DEADBAND
+    if soc_valid and soc_gap > 0 and soc_gap >= min_gap:
         if inp.kwh_per_pct is not None:
             # Geleerde kWh per procent (incl. laadverlies) heeft voorrang.
-            kwh_needed = (inp.soc_target - soc_now) * inp.kwh_per_pct
+            kwh_needed = soc_gap * inp.kwh_per_pct
         else:
-            kwh_needed = (inp.soc_target - soc_now) / 100 * inp.battery_capacity_kwh
+            kwh_needed = soc_gap / 100 * inp.battery_capacity_kwh
     d.kwh_needed = kwh_needed
 
     # --- Vertrektijd/datum ---
@@ -335,7 +358,7 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     grid_deficit_kwh = max(0.0, kwh_needed - expected_solar_kwh)
 
     # --- Grid-vloer / ramp (op ACTUELE SoC) ---
-    charger_max_w = max_a * 3 * NOMINAL_W_PER_A
+    charger_max_w = delivered_amps(max_a) * 3 * NOMINAL_W_PER_A
     # Planningstekort: reken bewust op iets minder zon dan voorspeld. Is het
     # tekort 0, dan hoeft er niets van het net -> laadpauze tot de zon er is.
     planning_deficit_kwh = max(
@@ -424,7 +447,7 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     d.target_w = target_w
 
     # --- Fasekeuze ---
-    three_phase_min_w = min_a * 3 * NOMINAL_W_PER_A
+    three_phase_min_w = delivered_amps(min_a) * 3 * NOMINAL_W_PER_A
     # Fase-omhoog conservatief op het gemiddelde + buffer: voorkomt opschakelen
     # naar 3 fasen bij korte zon-pieken.
     phase_up_signal_w = (
@@ -462,15 +485,14 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
         inp.peb_status == "charging" and inp.charge_power_now_w > CHARGING_ACTIVE_W
     )
     wpa_meas = 0.0
-    if charging_active and inp.current_amps > 0:
-        wpa_meas = inp.charge_power_now_w / (inp.current_amps * inp.current_phase)
+    meas_amps = delivered_amps(inp.current_amps)
+    if charging_active and meas_amps > 0:
+        wpa_meas = inp.charge_power_now_w / (meas_amps * inp.current_phase)
     d.wpa_meas = wpa_meas
     wpa_meas_valid = (
         WPA_VALID_MIN <= wpa_meas <= WPA_VALID_MAX
         and inp.seconds_since_amp_change >= MEAS_SETTLE_S
         and not inp.preclimate_active  # klimaatlast vervuilt W/A niet
-        # Bij hoge SoC begrenst de auto zelf -> de meting is dan geen W/A meer.
-        and not (soc_valid and soc_now >= WPA_LEARN_MAX_SOC)
     )
     d.wpa_meas_valid = wpa_meas_valid
     wpa_new = round(
@@ -485,9 +507,8 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     d.update_wpa = wpa_meas_valid and abs(wpa_new - inp.wpa_stored) >= 1
 
     # --- Ampèrekeuze (deadband) ---
-    step = desired_phase * real_w_per_a
     avail = target_w
-    ideal = round(avail / step) if step > 0 else inp.current_amps
+    ideal = setpoint_for(avail, desired_phase, real_w_per_a)
     c = inp.current_amps
     amp_cooldown_ok = inp.seconds_since_amp_change >= AMP_SETTLE_S
     if forced_full:
@@ -496,9 +517,11 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
         amps_raw = min_a
     elif inp.grid_w > EMERGENCY_IMPORT_W and ideal < c:
         amps_raw = ideal
-    elif amp_cooldown_ok and ideal >= c + 1 and avail >= (c + 1) * step * 0.97:
+    elif (amp_cooldown_ok and ideal >= c + 1
+            and avail >= power_at(c + 1, desired_phase, real_w_per_a) * 0.97):
         amps_raw = c + 1
-    elif amp_cooldown_ok and ideal <= c - 1 and avail <= (c - 1) * step * 1.03:
+    elif (amp_cooldown_ok and ideal <= c - 1
+            and avail <= power_at(c - 1, desired_phase, real_w_per_a) * 1.03):
         amps_raw = c - 1
     else:
         amps_raw = c
@@ -507,7 +530,7 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     d.amps_change_needed = amps_clamped != inp.current_amps
 
     # --- Laden aan/uit ---
-    min_charge_w = min_a * desired_phase * NOMINAL_W_PER_A
+    min_charge_w = delivered_amps(min_a) * desired_phase * NOMINAL_W_PER_A
     charge_switch_min_s = CHARGE_SWITCH_MIN_MINUTEN * 60
     charge_switch_cooldown_ok = inp.seconds_since_charge_switch >= charge_switch_min_s
     d.charge_switch_cooldown_ok = charge_switch_cooldown_ok

@@ -21,7 +21,7 @@ from contextlib import contextmanager
 
 import psycopg2
 
-from .const import CYCLE_COLS, WPA_LEARN_MAX_SOC, WPA_MAX, WPA_MIN
+from .const import CYCLE_COLS, HIT_TARGET_TOLERANCE_PCT, WPA_MAX, WPA_MIN
 
 _CONNECT_TIMEOUT = 8
 _APP_NAME = "peblar_slim_laden"
@@ -92,11 +92,13 @@ def insert_cycle(url: str, row: dict) -> None:
         )
 
 
-# Alleen cycli sinds de laatst vastgelegde sessie bekijken; dat scheelt een
-# volledige scan van 14 dagen bij elke ronde.
+# Sessies worden begrensd door een reset van de sessieteller van de lader (nieuwe
+# stekkerbeurt), niet door laadpauzes: een nacht met pauze is één sessie. Daarom
+# telt ook de energie-DELTA binnen de groep, niet het maximum van een teller die
+# over meerdere laadblokken doorloopt.
 _SESSION_SQL = """
 WITH bound AS (
-    SELECT COALESCE(MAX(end_ts), now() - interval '14 days') AS since
+    SELECT COALESCE(MAX(start_ts), now() - interval '14 days') AS since
     FROM peb_charge_session
 ),
 c AS (
@@ -104,12 +106,13 @@ c AS (
            wpa_meas, wpa_meas_valid
     FROM peb_charge_cycle, bound
     WHERE charger_w > 200
-      AND ts > bound.since
+      AND ts >= bound.since
 ),
 flagged AS (
     SELECT *,
-        CASE WHEN ts - LAG(ts) OVER w > interval '15 min'
-                  OR LAG(ts) OVER w IS NULL
+        CASE WHEN LAG(ts) OVER w IS NULL
+                  OR session_energy_kwh < LAG(session_energy_kwh) OVER w - 0.05
+                  OR ts - LAG(ts) OVER w > interval '12 hours'
              THEN 1 ELSE 0 END AS new_grp,
         CASE WHEN current_phase IS DISTINCT FROM LAG(current_phase) OVER w
                   AND LAG(current_phase) OVER w IS NOT NULL
@@ -127,10 +130,10 @@ sessions AS (
     SELECT
         MIN(ts) AS start_ts,
         MAX(ts) AS end_ts,
-        (array_agg(soc_now ORDER BY ts))[1] AS soc_start,
-        (array_agg(soc_now ORDER BY ts DESC))[1] AS soc_end,
+        (array_agg(soc_now ORDER BY ts) FILTER (WHERE soc_now > 0))[1] AS soc_start,
+        (array_agg(soc_now ORDER BY ts DESC) FILTER (WHERE soc_now > 0))[1] AS soc_end,
         (array_agg(soc_target ORDER BY ts DESC))[1] AS soc_target_end,
-        MAX(session_energy_kwh) AS energy_kwh,
+        MAX(session_energy_kwh) - MIN(session_energy_kwh) AS energy_kwh,
         AVG(wpa_meas) FILTER (WHERE wpa_meas_valid) AS avg_wpa,
         SUM(phase_chg) AS phase_changes,
         SUM(stop_flag) AS stops
@@ -142,18 +145,25 @@ INSERT INTO peb_charge_session
      phase_changes, stops, hit_target)
 SELECT start_ts, end_ts, soc_start, soc_end, energy_kwh, avg_wpa,
        phase_changes, stops,
-       (soc_end >= soc_target_end) AS hit_target
+       (soc_end >= soc_target_end - %s) AS hit_target
 FROM sessions s
 WHERE s.end_ts < now() - interval '10 min'
   AND s.start_ts < s.end_ts
-ON CONFLICT (start_ts) DO NOTHING;
+ON CONFLICT (start_ts) DO UPDATE SET
+    end_ts        = EXCLUDED.end_ts,
+    soc_end       = EXCLUDED.soc_end,
+    energy_kwh    = EXCLUDED.energy_kwh,
+    avg_wpa       = EXCLUDED.avg_wpa,
+    phase_changes = EXCLUDED.phase_changes,
+    stops         = EXCLUDED.stops,
+    hit_target    = EXCLUDED.hit_target;
 """
 
 
 def process_sessions(url: str) -> int:
     """Detecteer voltooide laadsessies en schrijf ze naar peb_charge_session."""
     with _cursor(url) as cur:
-        cur.execute(_SESSION_SQL)
+        cur.execute(_SESSION_SQL, (HIT_TARGET_TOLERANCE_PCT,))
         return cur.rowcount
 
 
@@ -212,10 +222,13 @@ def read_learned(url: str) -> dict:
             out["forecast_bias"] = float(row[0])
 
         # Geleerde kWh per 1% SoC uit voltooide sessies (incl. laadverlies).
+        # De ratio-grens houdt sessies met een kapotte energie- of SoC-meting
+        # buiten het gemiddelde; die trokken kwh_needed anders factoren omhoog.
         cur.execute(
-            "SELECT AVG(energy_kwh / NULLIF(soc_end - soc_start, 0)) "
+            "SELECT AVG(energy_kwh / (soc_end - soc_start)) "
             "FROM peb_charge_session "
             "WHERE (soc_end - soc_start) >= 15 AND energy_kwh > 1 "
+            "AND energy_kwh / (soc_end - soc_start) BETWEEN 0.1 AND 2.0 "
             "AND start_ts > now() - interval '60 days' "
             "HAVING count(*) >= 4"
         )
@@ -224,16 +237,14 @@ def read_learned(url: str) -> dict:
             out["kwh_per_pct"] = float(row[0])
 
         # Per-fase W/A. De meting hoort bij de fase waarop op dat moment geladen
-        # werd (current_phase), niet bij de gewenste fase; en niet bij een hoge
-        # SoC, want dan begrenst de auto zelf.
+        # werd (current_phase), niet bij de gewenste fase.
         cur.execute(
             "SELECT current_phase, AVG(wpa_meas) FROM peb_charge_cycle "
             "WHERE wpa_meas_valid AND wpa_meas BETWEEN %s AND %s "
             "AND current_phase IN (1, 3) "
-            "AND (soc_now IS NULL OR soc_now < %s) "
             "AND ts > now() - interval '30 days' "
             "GROUP BY current_phase HAVING count(*) >= 20",
-            (WPA_MIN, WPA_MAX, WPA_LEARN_MAX_SOC),
+            (WPA_MIN, WPA_MAX),
         )
         for phase, avg in cur.fetchall():
             if avg is None:

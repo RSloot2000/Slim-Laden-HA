@@ -65,7 +65,7 @@ check("Zon: available_solar>0", d.available_solar_w > 0)
 # 2) Snel-modus: forced_full, target = max A * 3 fase * 230.
 d = compute(ChargeInputs(now=NOW, laadmodus="Snel", soc_raw=50, max_a=16))
 check("Snel: forced_full", d.forced_full)
-check("Snel: target vol", d.target_w == 16 * 3 * 230)
+check("Snel: target vol", d.target_w == 15 * 3 * 230)
 check("Snel: desired_phase 3", d.desired_phase == 3)
 
 # 3) Hybride met deadline gepasseerd -> behind_schedule + noodstop.
@@ -78,7 +78,7 @@ d = compute(
     )
 )
 check("Hybride deadline: behind_schedule", d.behind_schedule)
-check("Hybride deadline: must_charge vol vermogen", d.must_charge_w == 16 * 3 * 230)
+check("Hybride deadline: must_charge vol vermogen", d.must_charge_w == 15 * 3 * 230)
 
 # 4) Preclimate: laden aanhouden ook al is de auto vol (soc==target).
 d = compute(
@@ -102,15 +102,16 @@ d = compute(
 )
 check("Preclimate: wpa_meas_valid False", d.wpa_meas_valid is False)
 
-# 6) W/A-meting geldig zonder preclimate (binnen 200-240, settled).
+# 6) W/A-meting geldig zonder preclimate: setpoint 16 A levert 15 A.
 d = compute(
     ChargeInputs(
-        now=NOW, peb_status="charging", charge_power_now_w=16 * 1 * 225,
+        now=NOW, peb_status="charging", charge_power_now_w=15 * 1 * 230,
         current_amps=16, current_phase=1, seconds_since_amp_change=60,
         wpa_stored=230,
     )
 )
 check("W/A geldig zonder preclimate", d.wpa_meas_valid is True)
+check("W/A gecorrigeerd voor ampère-offset", abs(d.wpa_meas - 230) < 0.1)
 
 # 7) Ampère-deadband: geen wijziging zonder cooldown.
 d = compute(
@@ -272,15 +273,47 @@ check("Andere auto: max ampère", d.amps_set == 16)
 d = compute(ChargeInputs(now=NOW, laadmodus="Snel", soc_raw=50, min_a=16, max_a=6))
 check("min>max: ampère binnen 6..16", 6 <= d.amps_set <= 16)
 
-# 23) W/A-leren onderdrukt bij hoge SoC (auto begrenst dan zelf).
+# 23) Laagste werkpunt (setpoint 6 A -> 1188 W gemeten) is leerbaar; zonder de
+#     ampère-offset gaf dat 198 W/A en viel de meting buiten het geldige bereik.
 d = compute(
     ChargeInputs(
-        now=NOW, peb_status="charging", charge_power_now_w=16 * 1 * 225,
-        current_amps=16, current_phase=1, seconds_since_amp_change=60,
+        now=NOW, peb_status="charging", charge_power_now_w=1188,
+        current_amps=6, current_phase=1, seconds_since_amp_change=60,
         soc_raw=95,
     )
 )
-check("Hoge SoC: W/A-meting ongeldig", d.wpa_meas_valid is False)
+check("Laag werkpunt: W/A ~238", abs(d.wpa_meas - 237.6) < 0.5)
+check("Laag werkpunt: meting geldig", d.wpa_meas_valid is True)
+
+# 24) Vlak profiel: bij een correcte kwh_needed blijft de netvloer constant
+#     terwijl de nacht vordert (geen aflopend profiel).
+def _floor(uren_rest, kwh_rest):
+    dep = NOW + timedelta(hours=uren_rest + 0.25)
+    return compute(
+        ChargeInputs(
+            now=NOW, laadmodus="Hybride", soc_raw=100 - kwh_rest / 0.215,
+            soc_target=100, kwh_per_pct=0.215, dep_time=dep.strftime("%H:%M:%S"),
+            dep_date=dep.date().strftime("%Y-%m-%d"), grid_ok=True,
+            solar_detail_ok=True, solar_before_dep_kwh=0.0,
+        )
+    ).base_floor_w
+
+
+f_start, f_half = _floor(10.0, 13.0), _floor(5.0, 6.5)
+# Tolerantie dekt de afronding van soc_now op 0,1 %.
+check("Constante netvloer over de nacht", abs(f_start - f_half) < f_start * 0.01)
+
+# 25) Doel-SoC gehaald: niet opnieuw starten op 1% terugval.
+_klaar = dict(
+    now=NOW, laadmodus="Hybride", soc_target=100, battery_capacity_kwh=50,
+    dep_time="09:30:00", dep_date=NOW.date().strftime("%Y-%m-%d"), grid_ok=True,
+)
+d = compute(ChargeInputs(soc_raw=99, charge_now_on=False, **_klaar))
+check("Doel gehaald: 1% terugval start niet", d.kwh_needed == 0)
+d = compute(ChargeInputs(soc_raw=99, charge_now_on=True, **_klaar))
+check("Tijdens laden telt elk procent wel", d.kwh_needed > 0)
+d = compute(ChargeInputs(soc_raw=95, charge_now_on=False, **_klaar))
+check("Grotere terugval start wel weer", d.kwh_needed > 0)
 
 # 15) Deadline-modus blijft op 3 fasen ondanks net-import.
 d = compute(

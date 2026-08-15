@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .const import CAP_LEARN_ABS_MAX, CAP_LEARN_ABS_MIN, CAP_LEARN_REL_SPAN
+
 
 @dataclass
 class CapacityResult:
@@ -40,7 +42,8 @@ def learn_capacity(
     - geldige SoC nodig; geen andere auto; geen preclimate-sessie
     - soc_delta >= 10 %
     - energy_session > 1 kWh en <= soc_delta * 0.9 (plausibiliteit)
-    - EMA alleen als 10 < meting < 40 kWh
+    - EMA alleen als de meting binnen de absolute grenzen valt én niet meer dan
+      CAP_LEARN_REL_SPAN afwijkt van de huidige instelling
     """
     res = CapacityResult()
     soc_valid = (
@@ -63,7 +66,13 @@ def learn_capacity(
     new_capacity = energy_session / (soc_delta / 100)
     res.new_capacity = new_capacity
 
-    if 10 < new_capacity < 40:
+    plausible = (
+        CAP_LEARN_ABS_MIN <= new_capacity <= CAP_LEARN_ABS_MAX
+        and old_capacity / CAP_LEARN_REL_SPAN
+        <= new_capacity
+        <= old_capacity * CAP_LEARN_REL_SPAN
+    )
+    if plausible:
         res.updated_capacity = old_capacity * 0.7 + new_capacity * 0.3
         res.updated = True
     else:

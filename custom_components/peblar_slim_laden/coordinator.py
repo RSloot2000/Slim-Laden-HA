@@ -39,6 +39,7 @@ from .const import (
     CONF_SOLCAST_TODAY,
     CONF_SOLCAST_TODAY_REMAINING,
     CONF_SOLCAST_TOMORROW,
+    CYCLE_LOG_MIN_INTERVAL,
     DEBOUNCE_SECONDS,
     DEFAULT_SETTINGS,
     DEFAULT_STATE,
@@ -51,8 +52,8 @@ from .const import (
     HIT_RATE_TARGET,
     HW_MAX_A,
     HW_MIN_A,
-    KWH_PER_PCT_MAX,
-    KWH_PER_PCT_MIN,
+    KWH_PER_PCT_MAX_FACTOR,
+    KWH_PER_PCT_MIN_FACTOR,
     MAX_RESTART_POGINGEN,
     POWER_SAMPLE_MAXLEN,
     POWER_SAMPLE_WINDOW,
@@ -80,6 +81,8 @@ from .const import (
     ST_LAST_CHARGE_SWITCH,
     ST_LAST_PHASE_CHANGE,
     ST_LAST_RESTART,
+    ST_PV_DAY,
+    ST_PV_DAY_MAX,
     ST_RESTART_ATTEMPTS,
     ST_SOC_START,
     ST_WPA_STORED,
@@ -126,6 +129,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         self._prev_status: str | None = None
         self._time_changed_flag = False
         self._stranded_notified = False
+        self._last_cycle_log: datetime | None = None
         self._unsub_listeners: list = []
         self.db_status = "unknown"
         # Geleerde signalen uit de DB (Fase C-E); leeg tot de eerste uitlezing.
@@ -441,6 +445,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
 
         regelen = bool(self.get_setting(SET_REGELEN_ACTIEF))
 
+        self._track_pv_daily(now)
         await self._handle_capacity(inp, now)
         # W/A leren gebeurt altijd (pure observatie), ook in observe-only.
         if decision.update_wpa:
@@ -457,6 +462,20 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
     # ------------------------------------------------------------------
     # Capaciteit leren (charging <-> suspended overgangen)
     # ------------------------------------------------------------------
+    @callback
+    def _track_pv_daily(self, now: datetime) -> None:
+        """Houd de hoogste stand van de PV-dagteller bij.
+
+        De omvormer valt na zonsondergang stil, dus de stand om 23:55 is niet
+        betrouwbaar; het maximum van de dag wel.
+        """
+        today = now.date().isoformat()
+        if self._get_state(ST_PV_DAY) != today:
+            self._set_state(ST_PV_DAY, today)
+            self._set_state(ST_PV_DAY_MAX, 0.0)
+        value = self._num(CONF_PV_DAILY_ENERGY)
+        if value is not None and value > float(self._get_state(ST_PV_DAY_MAX) or 0.0):
+            self._set_state(ST_PV_DAY_MAX, value)
     async def _handle_capacity(self, inp: ChargeInputs, now: datetime) -> None:
         status = inp.peb_status
         prev = self._prev_status
@@ -679,6 +698,13 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         db_url = self.conf.get(CONF_DB_URL)
         if not db_url:
             return
+        now = dt_util.utcnow()
+        if (
+            self._last_cycle_log is not None
+            and now - self._last_cycle_log < CYCLE_LOG_MIN_INTERVAL
+        ):
+            return
+        self._last_cycle_log = now
         row = {
             "laadmodus": d.laadmodus,
             "peb_status": d.peb_status,
@@ -745,9 +771,17 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
 
     async def async_capture_actual_today(self) -> None:
         """Leg de werkelijke dagopbrengst vast."""
-        act = self._num(CONF_PV_DAILY_ENERGY)
-        if act is not None:
-            await self.async_forecast_capture(None, act)
+        if self._get_state(ST_PV_DAY) != dt_util.now().date().isoformat():
+            return
+        actual = float(self._get_state(ST_PV_DAY_MAX) or 0.0)
+        if actual <= 0:
+            _LOGGER.warning(
+                "peblar_slim_laden: geen PV-dagopbrengst gezien vandaag; "
+                "controleer of 'PV opbrengst vandaag' aan een dagteller in kWh "
+                "hangt en niet aan een vermogenssensor"
+            )
+            return
+        await self.async_forecast_capture(None, actual)
 
     async def async_refresh_learned(self, _now=None) -> None:
         """Lees geleerde signalen uit de DB en klem ze (Fase C-E)."""
@@ -766,9 +800,28 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             clamp(fb, FORECAST_BIAS_MIN, FORECAST_BIAS_MAX) if fb else None
         )
         kp = raw.get("kwh_per_pct")
-        learned["kwh_per_pct"] = (
-            clamp(kp, KWH_PER_PCT_MIN, KWH_PER_PCT_MAX) if kp else None
-        )
+        # Relatief aan de ingestelde capaciteit klemmen: een uitschieter in de
+        # sessiedata mag kwh_needed niet met een factor mis laten rekenen.
+        cap_per_pct = float(self.get_setting(SET_ACCU_CAPACITEIT_KWH)) / 100
+        if kp:
+            clamped = clamp(
+                kp,
+                cap_per_pct * KWH_PER_PCT_MIN_FACTOR,
+                cap_per_pct * KWH_PER_PCT_MAX_FACTOR,
+            )
+            if abs(clamped - kp) > 0.02:
+                _LOGGER.warning(
+                    "peblar_slim_laden: gemeten %.3f kWh/%% wijkt sterk af van de "
+                    "ingestelde accu-capaciteit (%.1f kWh -> %.3f kWh/%%) en is "
+                    "geklemd op %.3f. Controleer de accu-capaciteit.",
+                    kp,
+                    cap_per_pct * 100,
+                    cap_per_pct,
+                    clamped,
+                )
+            learned["kwh_per_pct"] = clamped
+        else:
+            learned["kwh_per_pct"] = None
         for key in ("wpa_1p", "wpa_3p"):
             val = raw.get(key)
             learned[key] = clamp(val, WPA_MIN, WPA_MAX) if val else None

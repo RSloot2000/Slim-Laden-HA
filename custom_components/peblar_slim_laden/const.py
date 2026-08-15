@@ -101,7 +101,10 @@ LAADMODI = ["Snel", "Zon", "Hybride"]
 DEFAULT_SETTINGS: dict = {
     SET_LAADMODUS: "Hybride",
     SET_DOEL_SOC: 100,
-    SET_ACCU_CAPACITEIT_KWH: 50.0,
+    # Energie aan de laadpaal voor 100% SoC: bruikbare accu (~21,5 kWh op een
+    # C300e) gedeeld door het laadrendement. kwh_needed stuurt de netvloer aan
+    # en wordt dus aan de netzijde gemeten, niet aan de accuzijde.
+    SET_ACCU_CAPACITEIT_KWH: 25.0,
     SET_PV_MARGE_WATT: 50.0,
     SET_MIN_A: 6,
     SET_MAX_A: 16,
@@ -129,6 +132,8 @@ ST_LAST_CHARGE_DEMAND = "last_charge_demand"
 ST_LAST_RESTART = "last_restart"
 ST_SOC_START = "soc_start"                        # capaciteit-leren
 ST_ENERGY_START = "energy_start"
+ST_PV_DAY = "pv_daily_day"                        # dag waarop ST_PV_DAY_MAX hoort
+ST_PV_DAY_MAX = "pv_daily_max"
 
 DEFAULT_STATE: dict = {
     ST_WPA_STORED: 230.0,
@@ -140,6 +145,8 @@ DEFAULT_STATE: dict = {
     ST_LAST_RESTART: None,
     ST_SOC_START: None,
     ST_ENERGY_START: None,
+    ST_PV_DAY: None,
+    ST_PV_DAY_MAX: 0.0,
 }
 
 # ---------------------------------------------------------------------------
@@ -150,12 +157,15 @@ GRACE_HOURS = 0.25
 HW_MIN_A = 6
 HW_MAX_A = 16
 NOMINAL_W_PER_A = 230             # nominaal W per ampère per fase (230 V)
+# De lader trekt structureel één ampère minder dan het setpoint dat naar de
+# laadlimiet wordt geschreven. Zonder deze correctie lijkt W/A stroomafhankelijk
+# (198 bij setpoint 6 A, 223 bij 15 A) en kloppen de fase- en zondrempels niet.
+AMP_OFFSET_A = 1
 WPA_MIN = 150.0
 WPA_MAX = 250.0
 WPA_VALID_MIN = 200.0
 WPA_VALID_MAX = 240.0
 WPA_EMA_ALPHA = 0.3               # nieuw gewicht (0.7 oud + 0.3 nieuw)
-WPA_LEARN_MAX_SOC = 85.0          # boven deze SoC begrenst de auto zelf -> niet leren
 MEAS_SETTLE_S = 15
 AMP_SETTLE_S = 30
 PHASE_UP_BUFFER_W = 150
@@ -168,6 +178,11 @@ PRECLIMATE_POWER_W = 3500.0       # zelfbegrenzing auto bij vol + preclimate
 # 1.0 houden we een marge aan voor een tegenvallende dag; boven het tekort is
 # er geen netvloer nodig en pauzeert het laden tot de zon er is.
 SOLAR_TRUST_FACTOR = 0.8
+
+# Zodra de doel-SoC gehaald is moet de SoC minstens zoveel procent terugvallen
+# voordat er opnieuw geladen wordt; anders gaat de laadschakelaar aan/uit
+# knipperen op 1% ruis rond het doel.
+SOC_RESTART_DEADBAND = 2.0
 
 # Waarden die "geen vertrektijd/-datum ingesteld" betekenen.
 NO_VALUE_STRINGS: tuple = ("", "unknown", "unavailable", None)
@@ -189,15 +204,32 @@ DEBOUNCE_SECONDS = 10
 # Venster waarover grid-/laadvermogen gemiddeld wordt voor de fasekeuze.
 POWER_SAMPLE_WINDOW = timedelta(minutes=2)
 POWER_SAMPLE_MAXLEN = 240
+# Minimale tijd tussen twee rijen in peb_charge_cycle. De regellus draait vaker
+# dan dit; voor de leerlaag is een rij per minuut ruim voldoende.
+CYCLE_LOG_MIN_INTERVAL = timedelta(seconds=60)
 
 # Leerlaag (Fase C-E): periodieke DB-uitlezing + clamps op geleerde waarden.
 LEARN_REFRESH_INTERVAL = timedelta(minutes=30)
 FORECAST_BIAS_MIN = 0.5
 FORECAST_BIAS_MAX = 1.5
-KWH_PER_PCT_MIN = 0.2
-KWH_PER_PCT_MAX = 1.2
+# De geleerde kWh per 1% SoC wordt geklemd rond de ingestelde accu-capaciteit.
+# Absolute grenzen laten een foute sessiemeting ongemerkt een factor 2 te hoog
+# doorwerken in kwh_needed, wat de hele nachtplanning scheeftrekt. De marge
+# boven 1.0 dekt het laadverlies (netzijde meten, accuzijde rekenen).
+KWH_PER_PCT_MIN_FACTOR = 0.90
+KWH_PER_PCT_MAX_FACTOR = 1.30
 RAMP_BIAS_MAX = 0.15
 HIT_RATE_TARGET = 0.8
+# De SoC-sensor blijft in de praktijk op 99% steken bij een doel van 100%; zonder
+# tolerantie telt elke geslaagde sessie als gemist en loopt de ramp_bias vol.
+HIT_TARGET_TOLERANCE_PCT = 2.0
+
+# Accu-capaciteit leren: absolute grenzen én een maximale sprong t.o.v. de
+# huidige instelling. De span moet ruim genoeg zijn om een verkeerd ingestelde
+# beginwaarde alsnog te kunnen corrigeren; de EMA dempt losse uitschieters al.
+CAP_LEARN_ABS_MIN = 10.0
+CAP_LEARN_ABS_MAX = 120.0
+CAP_LEARN_REL_SPAN = 2.5
 
 # ---------------------------------------------------------------------------
 # TimescaleDB — kolommen van peb_charge_cycle (ts server-side).
