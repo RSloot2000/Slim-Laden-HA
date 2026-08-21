@@ -15,12 +15,18 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     DOMAIN,
+    HOUSE_MEMORY_MAX_DAYS,
+    HOUSE_MEMORY_MIN_DAYS,
     HW_MAX_A,
     HW_MIN_A,
+    MAINS_MAX_A,
+    MAINS_MIN_A,
     SET_ACCU_CAPACITEIT_KWH,
     SET_DOEL_SOC,
     SET_FASEWISSEL_MIN_MINUTEN,
+    SET_HUISVERBRUIK_DAGEN,
     SET_MAX_A,
+    SET_MAX_NET_A,
     SET_MIN_A,
     SET_PV_MARGE_WATT,
     SET_ZON_BENUT_FACTOR,
@@ -76,6 +82,20 @@ NUMBERS: tuple[PeblarNumberDescription, ...] = (
         translation_key=SET_FASEWISSEL_MIN_MINUTEN,
         name="Fasewissel min-interval", native_min_value=0, native_max_value=60,
         native_step=1, native_unit_of_measurement="min", mode=NumberMode.BOX,
+    ),
+    PeblarNumberDescription(
+        key=SET_HUISVERBRUIK_DAGEN, setting_key=SET_HUISVERBRUIK_DAGEN,
+        translation_key=SET_HUISVERBRUIK_DAGEN,
+        name="Huisverbruik leerperiode",
+        native_min_value=HOUSE_MEMORY_MIN_DAYS,
+        native_max_value=HOUSE_MEMORY_MAX_DAYS,
+        native_step=1, native_unit_of_measurement="d", mode=NumberMode.BOX,
+    ),
+    PeblarNumberDescription(
+        key=SET_MAX_NET_A, setting_key=SET_MAX_NET_A,
+        translation_key=SET_MAX_NET_A, name="Hoofdzekering per fase",
+        native_min_value=MAINS_MIN_A, native_max_value=MAINS_MAX_A,
+        native_step=1, native_unit_of_measurement="A", mode=NumberMode.BOX,
     ),
 )
 

@@ -48,6 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Zet een config entry op."""
     coordinator = PeblarCoordinator(hass, entry)
     await coordinator.async_load_store()
+    await coordinator.async_ensure_schema()
     # Geleerde signalen ophalen vóór de eerste regelcyclus (Fase C-E).
     await coordinator.async_refresh_learned()
     await coordinator.async_config_entry_first_refresh()
@@ -71,6 +72,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(
         async_track_time_change(hass, _sessions, minute=range(0, 60, 10), second=0)
+    )
+
+    # Oude cyclusrijen dagelijks opruimen.
+    entry.async_on_unload(
+        async_track_time_change(
+            hass, coordinator.async_prune_cycles, hour=3, minute=30, second=0
+        )
     )
 
     # Forecast vastleggen: 's ochtends de voorspelling, 's avonds het resultaat.

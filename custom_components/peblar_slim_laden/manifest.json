@@ -1,7 +1,7 @@
 {
   "domain": "peblar_slim_laden",
   "name": "Peblar Slim Laden",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "codeowners": ["@RSloot2000"],
   "config_flow": true,
   "single_config_entry": true,

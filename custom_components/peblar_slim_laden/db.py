@@ -21,8 +21,15 @@ from contextlib import contextmanager
 
 import psycopg2
 
-from .const import CYCLE_COLS, HIT_TARGET_TOLERANCE_PCT, WPA_MAX, WPA_MIN
-
+from .const import (
+    CYCLE_COLS,
+    HIT_TARGET_TOLERANCE_PCT,
+    KWH_PER_PCT_HALFLIFE_DAYS,
+    TEMP_MODEL_DAYS,
+    TEMP_MODEL_MIN_SESSIONS,
+    WPA_MAX,
+    WPA_MIN,
+)
 _CONNECT_TIMEOUT = 8
 _APP_NAME = "peblar_slim_laden"
 
@@ -80,6 +87,19 @@ def validate_url(url: str) -> None:
         conn.close()
 
 
+def ensure_schema(url: str) -> None:
+    """Voeg kolommen toe die latere versies nodig hebben (idempotent)."""
+    with _cursor(url) as cur:
+        cur.execute(
+            "ALTER TABLE peb_charge_cycle "
+            "ADD COLUMN IF NOT EXISTS outside_temp double precision"
+        )
+        cur.execute(
+            "ALTER TABLE peb_charge_session "
+            "ADD COLUMN IF NOT EXISTS avg_temp double precision"
+        )
+
+
 def insert_cycle(url: str, row: dict) -> None:
     """Schrijf één regelcyclus als rij naar peb_charge_cycle."""
     cols = ",".join(CYCLE_COLS)
@@ -103,7 +123,7 @@ WITH bound AS (
 ),
 c AS (
     SELECT ts, soc_now, soc_target, session_energy_kwh, current_phase,
-           wpa_meas, wpa_meas_valid
+           wpa_meas, wpa_meas_valid, outside_temp
     FROM peb_charge_cycle, bound
     WHERE charger_w > 200
       AND ts >= bound.since
@@ -135,15 +155,16 @@ sessions AS (
         (array_agg(soc_target ORDER BY ts DESC))[1] AS soc_target_end,
         MAX(session_energy_kwh) - MIN(session_energy_kwh) AS energy_kwh,
         AVG(wpa_meas) FILTER (WHERE wpa_meas_valid) AS avg_wpa,
+        AVG(outside_temp) AS avg_temp,
         SUM(phase_chg) AS phase_changes,
         SUM(stop_flag) AS stops
     FROM grouped
     GROUP BY grp
 )
 INSERT INTO peb_charge_session
-    (start_ts, end_ts, soc_start, soc_end, energy_kwh, avg_wpa,
+    (start_ts, end_ts, soc_start, soc_end, energy_kwh, avg_wpa, avg_temp,
      phase_changes, stops, hit_target)
-SELECT start_ts, end_ts, soc_start, soc_end, energy_kwh, avg_wpa,
+SELECT start_ts, end_ts, soc_start, soc_end, energy_kwh, avg_wpa, avg_temp,
        phase_changes, stops,
        (soc_end >= soc_target_end - %s) AS hit_target
 FROM sessions s
@@ -154,6 +175,7 @@ ON CONFLICT (start_ts) DO UPDATE SET
     soc_end       = EXCLUDED.soc_end,
     energy_kwh    = EXCLUDED.energy_kwh,
     avg_wpa       = EXCLUDED.avg_wpa,
+    avg_temp      = EXCLUDED.avg_temp,
     phase_changes = EXCLUDED.phase_changes,
     stops         = EXCLUDED.stops,
     hit_target    = EXCLUDED.hit_target;
@@ -164,6 +186,17 @@ def process_sessions(url: str) -> int:
     """Detecteer voltooide laadsessies en schrijf ze naar peb_charge_session."""
     with _cursor(url) as cur:
         cur.execute(_SESSION_SQL, (HIT_TARGET_TOLERANCE_PCT,))
+        return cur.rowcount
+
+
+def prune_cycles(url: str, retention_days: int) -> int:
+    """Verwijder cyclusrijen die buiten het leervenster vallen."""
+    with _cursor(url) as cur:
+        cur.execute(
+            "DELETE FROM peb_charge_cycle "
+            "WHERE ts < now() - make_interval(days => %s)",
+            (retention_days,),
+        )
         return cur.rowcount
 
 
@@ -205,6 +238,10 @@ def read_learned(url: str) -> dict:
     out: dict = {
         "forecast_bias": None,
         "kwh_per_pct": None,
+        "kpp_slope": None,
+        "kpp_intercept": None,
+        "kpp_temp_min": None,
+        "kpp_temp_max": None,
         "wpa_1p": None,
         "wpa_3p": None,
         "hit_rate": None,
@@ -221,20 +258,44 @@ def read_learned(url: str) -> dict:
         if row and row[0] is not None:
             out["forecast_bias"] = float(row[0])
 
-        # Geleerde kWh per 1% SoC uit voltooide sessies (incl. laadverlies).
+        # Geleerde kWh per 1% SoC, recency-gewogen zodat het seizoen doorwerkt.
         # De ratio-grens houdt sessies met een kapotte energie- of SoC-meting
-        # buiten het gemiddelde; die trokken kwh_needed anders factoren omhoog.
+        # buiten het gemiddelde.
         cur.execute(
-            "SELECT AVG(energy_kwh / (soc_end - soc_start)) "
-            "FROM peb_charge_session "
-            "WHERE (soc_end - soc_start) >= 15 AND energy_kwh > 1 "
-            "AND energy_kwh / (soc_end - soc_start) BETWEEN 0.1 AND 2.0 "
-            "AND start_ts > now() - interval '60 days' "
-            "HAVING count(*) >= 4"
+            "SELECT sum(w * kpp) / NULLIF(sum(w), 0), count(*) FROM ("
+            "  SELECT energy_kwh / (soc_end - soc_start) AS kpp,"
+            "         power(0.5, extract(epoch from now() - start_ts)"
+            "                    / 86400.0 / %s) AS w"
+            "  FROM peb_charge_session"
+            "  WHERE (soc_end - soc_start) >= 15 AND energy_kwh > 1"
+            "    AND energy_kwh / (soc_end - soc_start) BETWEEN 0.1 AND 2.0"
+            "    AND start_ts > now() - make_interval(days => %s)"
+            ") s HAVING count(*) >= 4",
+            (KWH_PER_PCT_HALFLIFE_DAYS, TEMP_MODEL_DAYS),
         )
         row = cur.fetchone()
         if row and row[0] is not None:
             out["kwh_per_pct"] = float(row[0])
+
+        # Temperatuurmodel: lineaire fit van kWh/% op de sessietemperatuur.
+        cur.execute(
+            "SELECT regr_slope(kpp, avg_temp), regr_intercept(kpp, avg_temp),"
+            "       count(*), min(avg_temp), max(avg_temp) FROM ("
+            "  SELECT energy_kwh / (soc_end - soc_start) AS kpp, avg_temp"
+            "  FROM peb_charge_session"
+            "  WHERE (soc_end - soc_start) >= 15 AND energy_kwh > 1"
+            "    AND energy_kwh / (soc_end - soc_start) BETWEEN 0.1 AND 2.0"
+            "    AND avg_temp IS NOT NULL"
+            "    AND start_ts > now() - make_interval(days => %s)"
+            ") s HAVING count(*) >= %s",
+            (TEMP_MODEL_DAYS, TEMP_MODEL_MIN_SESSIONS),
+        )
+        row = cur.fetchone()
+        if row and row[0] is not None and row[1] is not None:
+            out["kpp_slope"] = float(row[0])
+            out["kpp_intercept"] = float(row[1])
+            out["kpp_temp_min"] = float(row[3])
+            out["kpp_temp_max"] = float(row[4])
 
         # Per-fase W/A. De meting hoort bij de fase waarop op dat moment geladen
         # werd (current_phase), niet bij de gewenste fase.

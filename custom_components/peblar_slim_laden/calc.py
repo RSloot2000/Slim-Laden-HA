@@ -23,6 +23,8 @@ Laadstrategie per modus:
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -31,28 +33,126 @@ from .const import (
     AMP_SETTLE_S,
     CHARGE_SWITCH_MIN_MINUTEN,
     CHARGING_ACTIVE_W,
+    CONNECTED_STATES,
     EMERGENCY_IMPORT_W,
     GRACE_HOURS,
     HW_MAX_A,
     HW_MIN_A,
+    MAINS_MARGIN_A,
     MEAS_SETTLE_S,
     NO_DEPARTURE_TIME,
     NO_VALUE_STRINGS,
     NOMINAL_W_PER_A,
     PHASE_UP_BUFFER_W,
+    PLUG_IN,
+    PLUG_OUT,
     PRECLIMATE_POWER_W,
     SOC_RESTART_DEADBAND,
     SOLAR_TRUST_FACTOR,
     STOP_GRACE_MINUTEN,
+    TEMP_EXTRAPOLATE_C,
+    TEMP_MODEL_MIN_SPREAD_C,
+    TEMP_SLOPE_MAX,
+    TEMP_SLOPE_MIN,
     WPA_EMA_ALPHA,
     WPA_VALID_MAX,
     WPA_VALID_MIN,
 )
 
+SLOT = timedelta(minutes=30)
+
+
+@dataclass(frozen=True)
+class ForecastSlot:
+    """Half uur uit de Solcast detailedForecast."""
+
+    start: datetime
+    kwh: float                    # pv_estimate (P50)
+    kwh_p10: float | None = None  # pv_estimate10, ondergrens met 90% zekerheid
+
+
+@dataclass
+class SolarSurplus:
+    """Verwacht zonoverschot tot de deadline."""
+
+    kwh: float = 0.0          # op basis van P50
+    kwh_p10: float = 0.0      # op basis van P10
+    p10_ok: bool = False      # levert de forecast een P10-band?
+    covers_window: bool = False
+
+
+def solar_surplus_before(
+    slots: list[ForecastSlot],
+    now: datetime,
+    deadline: datetime,
+    bias: float,
+    house_kw: Callable[[datetime], float | None],
+) -> SolarSurplus:
+    """Tel het zonOVERSCHOT per half uur op tot de deadline.
+
+    Van elk slot gaat het verwachte huisverbruik van dat moment af; alleen wat
+    overblijft is beschikbaar voor de auto. Slots die maar deels binnen het
+    venster vallen tellen naar rato mee. `covers_window` is alleen True wanneer
+    de voorspelling de hele periode tot de deadline dekt - anders zou een
+    deelvoorspelling de opbrengst structureel onderschatten.
+    """
+    res = SolarSurplus()
+    slot_hours = SLOT.total_seconds() / 3600
+    last_end: datetime | None = None
+    seen_p10 = False
+    for slot in slots:
+        end = slot.start + SLOT
+        if last_end is None or end > last_end:
+            last_end = end
+        lo, hi = max(slot.start, now), min(end, deadline)
+        if hi <= lo:
+            continue
+        frac = (hi - lo) / SLOT
+        load = house_kw(slot.start)
+        house_kwh = 0.0 if load is None else load * slot_hours * frac
+        res.kwh += max(0.0, slot.kwh * bias * frac - house_kwh)
+        p10 = slot.kwh if slot.kwh_p10 is None else slot.kwh_p10
+        seen_p10 = seen_p10 or slot.kwh_p10 is not None
+        res.kwh_p10 += max(0.0, p10 * bias * frac - house_kwh)
+    res.kwh = round(res.kwh, 3)
+    res.kwh_p10 = round(res.kwh_p10, 3)
+    res.p10_ok = seen_p10
+    res.covers_window = last_end is not None and last_end >= deadline
+    return res
+
 
 def clamp(value: float, low: float, high: float) -> float:
     """Klem value tussen low en high (high wint als high < low)."""
     return max(low, min(high, value))
+
+
+def kwh_per_pct_at(
+    base: float | None,
+    slope: float | None,
+    intercept: float | None,
+    t_min: float | None,
+    t_max: float | None,
+    temp: float | None,
+) -> tuple[float | None, bool]:
+    """Kies de kWh per procent SoC voor deze temperatuur.
+
+    Geeft (waarde, model_gebruikt). Het regressiemodel wint alleen bij genoeg
+    temperatuurspreiding en een fysisch plausibele helling; buiten het
+    waargenomen bereik wordt niet ver geèxtrapoleerd. Anders telt `base`, het
+    recency-gewogen gemiddelde dat het seizoen met vertraging volgt.
+    """
+    if (
+        slope is None
+        or intercept is None
+        or temp is None
+        or t_min is None
+        or t_max is None
+        or (t_max - t_min) < TEMP_MODEL_MIN_SPREAD_C
+        or not TEMP_SLOPE_MIN <= slope <= TEMP_SLOPE_MAX
+    ):
+        return base, False
+    t = clamp(temp, t_min - TEMP_EXTRAPOLATE_C, t_max + TEMP_EXTRAPOLATE_C)
+    return intercept + slope * t, True
 
 
 def delivered_amps(setpoint_a: float) -> float:
@@ -117,6 +217,11 @@ class ChargeInputs:
     override_limit: bool = False
     preclimate_active: bool = False
     peb_status: str = "unknown"
+    prev_peb_status: str | None = None    # status van de vorige cyclus
+    # Stekkerstatus (PLUG_IN / PLUG_OUT / PLUG_UNKNOWN), door de coordinator
+    # bepaald uit de auto-integratie met de lader als fallback.
+    plug_state: str = "unknown"
+    prev_plug_state: str | None = None
 
     # Grenzen / instellingen
     min_a: int = HW_MIN_A
@@ -140,14 +245,19 @@ class ChargeInputs:
     fc_today_remaining: float = 0.0
     fc_tomorrow: float = 0.0
     pv_now_w: float = 0.0                 # Solcast huidig vermogen (of fallback)
-    solar_ok: bool = False               # Solcast resterende-vandaag beschikbaar
     solar_detail_ok: bool = False        # detailedForecast dekt de hele periode
-    solar_before_dep_kwh: float = 0.0    # som half-uur-slots tot deadline (coord.)
+    # Verwacht zonOVERSCHOT tot de deadline: de coordinator heeft de forecast-bias
+    # al toegepast en per half uur het geleerde huisverbruik afgetrokken.
+    solar_surplus_before_dep_kwh: float = 0.0
+    solar_surplus_p10_kwh: float = 0.0   # zelfde, maar op de P10-ondergrens
+    solar_p10_ok: bool = False
 
     # Vermogen
     grid_w: float = 0.0
     grid_ok: bool = False
     grid_avg_w: float = 0.0
+    grid_max_phase_a: float | None = None  # hoogste fasestroom van de P1-meter
+    max_net_a: int = 25                    # hoofdzekering per fase
     charger_w: float = 0.0
     charger_avg_w: float = 0.0
     charge_power_now_w: float = 0.0      # gemiddelde-sensor (of live)
@@ -207,6 +317,9 @@ class ChargeDecision:
     expected_solar_kwh: float = 0.0
     behind_schedule: bool = False
     session_energy_kwh: float = 0.0
+    eta_full: datetime | None = None     # verwacht moment waarop de doel-SoC gehaald is
+    mains_overload: bool = False         # hoofdzekering nadert zijn grens
+    mains_headroom_a: float | None = None
 
     # Toestand
     forced_full: bool = False
@@ -232,6 +345,7 @@ class ChargeDecision:
     charge_switch_cooldown_ok: bool = False
     set_charge_on: bool | None = None    # None = geen wijziging
     update_wpa: bool = False
+    just_disconnected: bool = False      # auto losgekoppeld -> lader resetten
 
 
 def _today_at(now: datetime, hhmmss: str) -> datetime | None:
@@ -347,23 +461,30 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
             tomorrow_frac = round((h - 7) / 9, 2)
 
     if inp.solar_detail_ok and not no_departure:
-        expected_solar_kwh = inp.solar_before_dep_kwh
+        # Al netto: forecast-bias verwerkt en huisverbruik per slot afgetrokken.
+        expected_solar_kwh = inp.solar_surplus_before_dep_kwh
+        # Voor de planning telt de P10-ondergrens: daar zit de onzekerheid van de
+        # voorspelling al in, wat scherper is dan een vaste veiligheidsfactor.
+        planning_solar_kwh = (
+            inp.solar_surplus_p10_kwh if inp.solar_p10_ok
+            else expected_solar_kwh * SOLAR_TRUST_FACTOR
+        )
     else:
-        expected_solar_kwh = solar_today_capped_kwh + inp.fc_tomorrow * tomorrow_frac
-    # forecast_bias corrigeert de voorspelling zelf (structureel te hoog/laag);
-    # zon_benut_factor vertaalt opbrengst naar het deel dat als overschot voor de
-    # auto overblijft (rest = huisverbruik). Twee verschillende correcties.
-    expected_solar_kwh *= inp.forecast_bias * inp.zon_benut_factor
+        # Zonder half-uur-detail blijft de grove benutfactor de enige correctie
+        # voor huisverbruik.
+        expected_solar_kwh = (
+            (solar_today_capped_kwh + inp.fc_tomorrow * tomorrow_frac)
+            * inp.forecast_bias * inp.zon_benut_factor
+        )
+        planning_solar_kwh = expected_solar_kwh * SOLAR_TRUST_FACTOR
     d.expected_solar_kwh = expected_solar_kwh
     grid_deficit_kwh = max(0.0, kwh_needed - expected_solar_kwh)
 
     # --- Grid-vloer / ramp (op ACTUELE SoC) ---
     charger_max_w = delivered_amps(max_a) * 3 * NOMINAL_W_PER_A
-    # Planningstekort: reken bewust op iets minder zon dan voorspeld. Is het
-    # tekort 0, dan hoeft er niets van het net -> laadpauze tot de zon er is.
-    planning_deficit_kwh = max(
-        0.0, kwh_needed - expected_solar_kwh * SOLAR_TRUST_FACTOR
-    )
+    # Planningstekort: reken bewust op de ondergrens van de zonvoorspelling. Is
+    # het tekort 0, dan hoeft er niets van het net -> laadpauze tot de zon er is.
+    planning_deficit_kwh = max(0.0, kwh_needed - planning_solar_kwh)
     base_floor_w = (
         0.0 if (no_departure or hours_left <= 0)
         else planning_deficit_kwh / hours_left * 1000
@@ -511,7 +632,19 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     ideal = setpoint_for(avail, desired_phase, real_w_per_a)
     c = inp.current_amps
     amp_cooldown_ok = inp.seconds_since_amp_change >= AMP_SETTLE_S
-    if forced_full:
+
+    # Hoofdzekering gaat vóór alles: bij dreigende overbelasting direct terug,
+    # zonder deadband of cooldown.
+    overload_a = 0.0
+    if inp.grid_max_phase_a is not None:
+        headroom = inp.max_net_a - MAINS_MARGIN_A - inp.grid_max_phase_a
+        d.mains_headroom_a = round(headroom, 1)
+        overload_a = max(0.0, -headroom)
+    d.mains_overload = overload_a > 0
+
+    if d.mains_overload:
+        amps_raw = c - math.ceil(overload_a)
+    elif forced_full:
         amps_raw = max_a
     elif d.phase_change_needed:
         amps_raw = min_a
@@ -525,6 +658,9 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
         amps_raw = c - 1
     else:
         amps_raw = c
+    # Kan de overbelasting niet met minder ampère opgelost worden, dan moet het
+    # laden stoppen; de zekering weegt zwaarder dan een doorlopende sessie.
+    mains_stop = d.mains_overload and amps_raw < min_a
     amps_clamped = int(clamp(amps_raw, min_a, max_a))
     d.amps_set = amps_clamped
     d.amps_change_needed = amps_clamped != inp.current_amps
@@ -555,7 +691,7 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     # aanwezig -> dan regelen we ook zonder geldige SoC (anders zou een SoC-uitval
     # het stoppen/regelen blokkeren en blijven we importeren). Bij 'suspended'
     # blijven we conservatief en eisen we wel een geldige SoC.
-    connected = inp.peb_status in ("charging", "suspended")
+    connected = inp.peb_status in CONNECTED_STATES
     if inp.other_car:
         # Van een andere auto valt niets te meten; wel gewoon vol laden.
         car_here = connected
@@ -570,13 +706,28 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     d.car_here = car_here
     d.my_car_here = my_car_here
 
+    # Losgekoppeld: de lader mag terug naar de rustinstelling. Bewust gekoppeld
+    # aan de stekkerstatus en niet aan een laadstop - bij 'suspended' hangt de
+    # auto er nog aan en kan het laden zo weer verdergaan.
+    d.just_disconnected = inp.plug_state == PLUG_OUT and (
+        inp.prev_plug_state is None or inp.prev_plug_state == PLUG_IN
+    )
+
     # Bepaal de gewenste laadschakelaar-stand (None = niet wijzigen).
     if car_here:
-        if not want_charge:
+        if mains_stop:
+            # Veiligheid gaat voor de cooldown.
+            if inp.charge_now_on:
+                d.set_charge_on = False
+        elif not want_charge:
             if inp.charge_now_on and charge_switch_cooldown_ok:
                 d.set_charge_on = False
         else:
             if not inp.charge_now_on and charge_switch_cooldown_ok:
                 d.set_charge_on = True
+
+    # Verwacht moment waarop de doel-SoC gehaald is, op het huidige target.
+    if kwh_needed > 0 and want_charge and target_w > 0:
+        d.eta_full = inp.now + timedelta(hours=kwh_needed / (target_w / 1000))
 
     return d

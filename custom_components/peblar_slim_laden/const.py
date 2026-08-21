@@ -17,10 +17,16 @@ CONF_SESSION_ENERGY = "session_energy"
 CONF_CHARGER_WARNINGS = "charger_warnings"
 CONF_CHARGER_FAULTS = "charger_faults"
 CONF_CAR_SOC = "car_soc"
+CONF_CAR_PLUG_STATUS = "car_plug_status"
 CONF_PRECLIMATE_SWITCH = "preclimate_switch"
 CONF_GRID_POWER = "grid_power"
+CONF_GRID_CURRENT_L1 = "grid_current_l1"
+CONF_GRID_CURRENT_L2 = "grid_current_l2"
+CONF_GRID_CURRENT_L3 = "grid_current_l3"
 CONF_PV_POWER = "pv_power"
 CONF_PV_DAILY_ENERGY = "pv_daily_energy"
+CONF_OUTSIDE_TEMP = "outside_temp"          # actuele buitentemperatuur
+CONF_NIGHT_MIN_TEMP = "night_min_temp"      # minimum voor de komende nacht
 
 # Solcast forecast
 CONF_SOLCAST_TODAY_REMAINING = "solcast_today_remaining"
@@ -42,6 +48,15 @@ CONF_RESTART_BUTTON = "restart_button"
 # Database
 CONF_DB_URL = "db_url"
 
+# Statussen van CONF_CAR_PLUG_STATUS die "stekker eruit" betekenen (kommagescheiden,
+# hoofdletterongevoelig). De laadstatus van de auto-integratie is betrouwbaarder
+# dan die van de lader, die 'suspended' blijft melden zolang de kabel erin zit.
+# Mercedes (mbapi2020) chargingstatus: 0 opladen, 1 opladen beéindigd,
+# 2 oplaadpauze, 3 LOSGEKOPPELD, 4 fout, 5 langzaam, 6 snel, 7 ontladen,
+# 8 niet aan het opladen, 12 verbonden, 13 AC, 14 DC, 16 onbekend.
+CONF_UNPLUGGED_STATES = "unplugged_states"
+DEFAULT_UNPLUGGED_STATES = "3"
+
 # Verplichte externe entiteiten (config flow stap 1/2)
 REQUIRED_ENTITY_KEYS: list[str] = [
     CONF_CHARGER_STATUS,
@@ -60,6 +75,12 @@ REQUIRED_ENTITY_KEYS: list[str] = [
 
 # Optionele externe entiteiten
 OPTIONAL_ENTITY_KEYS: list[str] = [
+    CONF_CAR_PLUG_STATUS,
+    CONF_OUTSIDE_TEMP,
+    CONF_NIGHT_MIN_TEMP,
+    CONF_GRID_CURRENT_L1,
+    CONF_GRID_CURRENT_L2,
+    CONF_GRID_CURRENT_L3,
     CONF_PRECLIMATE_SWITCH,
     CONF_PV_DAILY_ENERGY,
     CONF_SOLCAST_TODAY_REMAINING,
@@ -84,6 +105,8 @@ SET_MAX_A = "laadvermogen_max_a"
 # beschikbaar komt (de rest gaat naar het huisverbruik). Dit is iets anders dan
 # de geleerde forecast_bias, die de voorspelling zelf corrigeert.
 SET_ZON_BENUT_FACTOR = "zon_benut_factor"
+SET_HUISVERBRUIK_DAGEN = "huisverbruik_geheugen_dagen"
+SET_MAX_NET_A = "max_netstroom_a"
 SET_FASEWISSEL_MIN_MINUTEN = "fasewissel_min_minuten"
 SET_VERTREKTIJD = "vertrektijd"
 SET_VERTREKDATUM = "vertrekdatum"
@@ -109,6 +132,8 @@ DEFAULT_SETTINGS: dict = {
     SET_MIN_A: 6,
     SET_MAX_A: 16,
     SET_ZON_BENUT_FACTOR: 0.6,
+    SET_HUISVERBRUIK_DAGEN: 28,
+    SET_MAX_NET_A: 25,
     SET_FASEWISSEL_MIN_MINUTEN: 10,
     SET_VERTREKTIJD: "00:00:00",
     SET_VERTREKDATUM: None,
@@ -134,6 +159,7 @@ ST_SOC_START = "soc_start"                        # capaciteit-leren
 ST_ENERGY_START = "energy_start"
 ST_PV_DAY = "pv_daily_day"                        # dag waarop ST_PV_DAY_MAX hoort
 ST_PV_DAY_MAX = "pv_daily_max"
+ST_HOUSE_PROFILE = "house_profile"                # 24 uurgemiddelden huisverbruik (W)
 
 DEFAULT_STATE: dict = {
     ST_WPA_STORED: 230.0,
@@ -147,6 +173,7 @@ DEFAULT_STATE: dict = {
     ST_ENERGY_START: None,
     ST_PV_DAY: None,
     ST_PV_DAY_MAX: 0.0,
+    ST_HOUSE_PROFILE: None,
 }
 
 # ---------------------------------------------------------------------------
@@ -174,10 +201,16 @@ CHARGE_SWITCH_MIN_MINUTEN = 5
 STOP_GRACE_MINUTEN = 3
 CHARGING_ACTIVE_W = 500
 PRECLIMATE_POWER_W = 3500.0       # zelfbegrenzing auto bij vol + preclimate
-# Deel van de voorspelde zon waarop de nachtplanning durft te rekenen. Onder de
-# 1.0 houden we een marge aan voor een tegenvallende dag; boven het tekort is
-# er geen netvloer nodig en pauzeert het laden tot de zon er is.
+# Deel van de voorspelde zon waarop de nachtplanning durft te rekenen. Alleen
+# nog gebruikt als Solcast geen P10-band levert; met P10 is de onzekerheid al
+# in de voorspelling zelf verwerkt.
 SOLAR_TRUST_FACTOR = 0.8
+
+# Hoofdzekering: onder deze marge van de zekeringwaarde wordt de laadstroom
+# direct teruggenomen, buiten alle cooldowns om.
+MAINS_MARGIN_A = 1.0
+MAINS_MIN_A = 10
+MAINS_MAX_A = 80
 
 # Zodra de doel-SoC gehaald is moet de SoC minstens zoveel procent terugvallen
 # voordat er opnieuw geladen wordt; anders gaat de laadschakelaar aan/uit
@@ -187,6 +220,25 @@ SOC_RESTART_DEADBAND = 2.0
 # Waarden die "geen vertrektijd/-datum ingesteld" betekenen.
 NO_VALUE_STRINGS: tuple = ("", "unknown", "unavailable", None)
 NO_DEPARTURE_TIME: str = "00:00:00"
+
+# Laderstatussen waarbij de auto aangesloten is. Alles daarbuiten (en niet
+# 'unknown'/'unavailable') betekent losgekoppeld.
+CONNECTED_STATES: tuple = ("charging", "suspended")
+
+# Stekkerstatus: bij voorkeur uit de auto-integratie, anders afgeleid uit de lader.
+PLUG_UNKNOWN = "unknown"
+PLUG_IN = "plugged"
+PLUG_OUT = "unplugged"
+
+# Huisverbruik-profiel: per weekdag 24 uurgemiddelden in W. Weekend en doordeweeks
+# verschillen te veel voor één profiel. Elk vak krijgt eens per week een meting,
+# die met een EMA wordt verwerkt; de tijdconstante volgt uit de ingestelde
+# leerperiode, zodat het profiel seizoensdrift netjes volgt.
+HOUSE_PROFILE_HOURS = 24
+HOUSE_PROFILE_DAYS = 7
+HOUSE_MEMORY_MIN_DAYS = 7
+HOUSE_MEMORY_MAX_DAYS = 120
+HOUSE_LOAD_MAX_W = 15000.0
 
 # Storing/herstart
 WARN_RESTART_MIN_MINUTEN = 20
@@ -207,6 +259,8 @@ POWER_SAMPLE_MAXLEN = 240
 # Minimale tijd tussen twee rijen in peb_charge_cycle. De regellus draait vaker
 # dan dit; voor de leerlaag is een rij per minuut ruim voldoende.
 CYCLE_LOG_MIN_INTERVAL = timedelta(seconds=60)
+# De leerqueries kijken maximaal 60 dagen terug; alles daarvoor mag weg.
+CYCLE_RETENTION_DAYS = 90
 
 # Leerlaag (Fase C-E): periodieke DB-uitlezing + clamps op geleerde waarden.
 LEARN_REFRESH_INTERVAL = timedelta(minutes=30)
@@ -217,7 +271,23 @@ FORECAST_BIAS_MAX = 1.5
 # doorwerken in kwh_needed, wat de hele nachtplanning scheeftrekt. De marge
 # boven 1.0 dekt het laadverlies (netzijde meten, accuzijde rekenen).
 KWH_PER_PCT_MIN_FACTOR = 0.90
-KWH_PER_PCT_MAX_FACTOR = 1.30
+KWH_PER_PCT_MAX_FACTOR = 1.40
+
+# Temperatuurmodel voor kwh_per_pct. In de kou daalt het laadrendement en draait
+# de accuconditionering mee, waardoor er meer kWh aan de paal nodig is per procent
+# SoC. Zolang er te weinig temperatuurspreiding is telt een recency-gewogen
+# gemiddelde, dat het seizoen volgt; daarna neemt de regressie het over, die
+# anticipeert in plaats van volgt.
+KWH_PER_PCT_HALFLIFE_DAYS = 21
+TEMP_MODEL_DAYS = 180
+TEMP_MODEL_MIN_SESSIONS = 10
+TEMP_MODEL_MIN_SPREAD_C = 8.0
+# Fysisch plausibele helling (kWh per procent per graad); buiten dit bereik is
+# de fit ruis en valt hij terug op het gemiddelde.
+TEMP_SLOPE_MIN = -0.006
+TEMP_SLOPE_MAX = 0.0
+# Buiten het waargenomen temperatuurbereik niet verder dan dit extrapoleren.
+TEMP_EXTRAPOLATE_C = 5.0
 RAMP_BIAS_MAX = 0.15
 HIT_RATE_TARGET = 0.8
 # De SoC-sensor blijft in de praktijk op 99% steken bij een doel van 100%; zonder
@@ -240,5 +310,5 @@ CYCLE_COLS: list[str] = [
     "grid_w", "pv_now_w", "available_solar_w", "base_floor_w", "ramp_factor",
     "urgentie", "must_charge_w", "target_w", "real_w_per_a", "wpa_meas",
     "wpa_meas_valid", "expected_solar_kwh", "behind_schedule",
-    "session_energy_kwh",
+    "session_energy_kwh", "outside_temp",
 ]

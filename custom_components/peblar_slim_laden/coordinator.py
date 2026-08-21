@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -15,8 +16,19 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from . import db
-from .calc import ChargeInputs, ChargeDecision, clamp, compute, parse_departure
+from .calc import (
+    ChargeDecision,
+    ChargeInputs,
+    ForecastSlot,
+    SolarSurplus,
+    clamp,
+    compute,
+    kwh_per_pct_at,
+    parse_departure,
+    solar_surplus_before,
+)
 from .const import (
+    CONF_CAR_PLUG_STATUS,
     CONF_CAR_SOC,
     CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -28,7 +40,12 @@ from .const import (
     CONF_FC_NOW_POWER,
     CONF_FC_TODAY_REMAINING,
     CONF_FC_TOMORROW,
+    CONF_GRID_CURRENT_L1,
+    CONF_GRID_CURRENT_L2,
+    CONF_GRID_CURRENT_L3,
     CONF_GRID_POWER,
+    CONF_NIGHT_MIN_TEMP,
+    CONF_OUTSIDE_TEMP,
     CONF_PRECLIMATE_SWITCH,
     CONF_PV_DAILY_ENERGY,
     CONF_PV_POWER,
@@ -39,10 +56,14 @@ from .const import (
     CONF_SOLCAST_TODAY,
     CONF_SOLCAST_TODAY_REMAINING,
     CONF_SOLCAST_TOMORROW,
+    CONF_UNPLUGGED_STATES,
+    CONNECTED_STATES,
     CYCLE_LOG_MIN_INTERVAL,
+    CYCLE_RETENTION_DAYS,
     DEBOUNCE_SECONDS,
     DEFAULT_SETTINGS,
     DEFAULT_STATE,
+    DEFAULT_UNPLUGGED_STATES,
     DOMAIN,
     EMERGENCY_IMPORT_W,
     ERR_RESTART_MIN_MINUTEN,
@@ -50,11 +71,19 @@ from .const import (
     FORECAST_BIAS_MAX,
     FORECAST_BIAS_MIN,
     HIT_RATE_TARGET,
+    HOUSE_LOAD_MAX_W,
+    HOUSE_MEMORY_MAX_DAYS,
+    HOUSE_MEMORY_MIN_DAYS,
+    HOUSE_PROFILE_DAYS,
+    HOUSE_PROFILE_HOURS,
     HW_MAX_A,
     HW_MIN_A,
     KWH_PER_PCT_MAX_FACTOR,
     KWH_PER_PCT_MIN_FACTOR,
     MAX_RESTART_POGINGEN,
+    PLUG_IN,
+    PLUG_OUT,
+    PLUG_UNKNOWN,
     POWER_SAMPLE_MAXLEN,
     POWER_SAMPLE_WINDOW,
     RAMP_BIAS_MAX,
@@ -65,9 +94,11 @@ from .const import (
     SET_DEBUG,
     SET_DOEL_SOC,
     SET_FASEWISSEL_MIN_MINUTEN,
+    SET_HUISVERBRUIK_DAGEN,
     SET_LAADLIMIET_OVERRIDE,
     SET_LAADMODUS,
     SET_MAX_A,
+    SET_MAX_NET_A,
     SET_MIN_A,
     SET_PV_MARGE_WATT,
     SET_REGELEN_ACTIEF,
@@ -76,6 +107,7 @@ from .const import (
     SET_VERTREKTIJD,
     SET_ZON_BENUT_FACTOR,
     ST_ENERGY_START,
+    ST_HOUSE_PROFILE,
     ST_LAST_AMP_CHANGE,
     ST_LAST_CHARGE_DEMAND,
     ST_LAST_CHARGE_SWITCH,
@@ -127,6 +159,13 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             maxlen=POWER_SAMPLE_MAXLEN
         )
         self._prev_status: str | None = None
+        self._prev_plug_state: str | None = None
+        self._seen_plug_values: set[str] = set()
+        self._house_key: tuple[int, int] | None = None
+        self._house_sum = 0.0
+        self._house_n = 0
+        self.house_now_w: float | None = None
+        self.temp_model_active = False
         self._time_changed_flag = False
         self._stranded_notified = False
         self._last_cycle_log: datetime | None = None
@@ -195,6 +234,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
                 CONF_GRID_POWER,
                 CONF_PV_POWER,
                 CONF_CAR_SOC,
+                CONF_CAR_PLUG_STATUS,
                 CONF_CHARGER_WARNINGS,
                 CONF_CHARGER_FAULTS,
                 CONF_PRECLIMATE_SWITCH,
@@ -214,6 +254,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         await self.async_request_refresh()
 
     def shutdown(self) -> None:
+        self._commit_house_hour()
         for unsub in self._unsub_listeners:
             unsub()
         self._unsub_listeners.clear()
@@ -297,15 +338,112 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             return None
         return sum(v for _, v in samples) / len(samples)
 
-    def _solar_before_dep(self, now: datetime, deadline: datetime) -> tuple[float, bool]:
-        """Som de half-uur-slots (Solcast detailedForecast) tot de deadline.
+    # ------------------------------------------------------------------
+    # Huisverbruik: meten en per uur van de dag leren
+    # ------------------------------------------------------------------
+    @callback
+    def _house_load_w(self) -> float | None:
+        """Huisverbruik = PV-productie + netafname - laadvermogen."""
+        grid = self._num(CONF_GRID_POWER)
+        pv = self._num(CONF_PV_POWER)
+        if grid is None or pv is None:
+            return None
+        charger = self._num(CONF_CHARGER_POWER, 0.0) or 0.0
+        return clamp(pv + grid - charger, 0.0, HOUSE_LOAD_MAX_W)
 
-        Het tweede returnveld is alleen True wanneer de forecast de héle periode
-        tot de deadline dekt; anders zou een deelvoorspelling de zonopbrengst
-        structureel onderschatten.
+    @callback
+    def _track_house_profile(self, now: datetime) -> None:
+        """Middel het huisverbruik per weekdag+klokuur en werk het profiel bij."""
+        key = (now.weekday(), now.hour)
+        if self._house_key is None:
+            self._house_key = key
+        elif key != self._house_key:
+            self._commit_house_hour()
+            self._house_key = key
+        value = self._house_load_w()
+        self.house_now_w = value
+        if value is not None:
+            self._house_sum += value
+            self._house_n += 1
+
+    @callback
+    def _house_profile(self) -> list[list[float | None]]:
+        """Het opgeslagen profiel als 7x24-matrix (leeg bij afwijkende vorm)."""
+        stored = self._get_state(ST_HOUSE_PROFILE)
+        if (
+            isinstance(stored, list)
+            and len(stored) == HOUSE_PROFILE_DAYS
+            and all(
+                isinstance(day, list) and len(day) == HOUSE_PROFILE_HOURS
+                for day in stored
+            )
+        ):
+            return [list(day) for day in stored]
+        return [[None] * HOUSE_PROFILE_HOURS for _ in range(HOUSE_PROFILE_DAYS)]
+
+    @callback
+    def _house_alpha(self) -> float:
+        """EMA-gewicht; elk vak krijgt eens per week een nieuwe meting."""
+        days = clamp(
+            float(self.get_setting(SET_HUISVERBRUIK_DAGEN)),
+            HOUSE_MEMORY_MIN_DAYS,
+            HOUSE_MEMORY_MAX_DAYS,
+        )
+        return 1 - math.exp(-HOUSE_PROFILE_DAYS / days)
+
+    @callback
+    def _commit_house_hour(self) -> None:
+        """Verwerk het uurgemiddelde met een EMA in het opgeslagen profiel."""
+        key, total, n = self._house_key, self._house_sum, self._house_n
+        self._house_sum, self._house_n = 0.0, 0
+        if key is None or n == 0:
+            return
+        weekday, hour = key
+        mean = total / n
+        profile = self._house_profile()
+        old = profile[weekday][hour]
+        alpha = self._house_alpha()
+        profile[weekday][hour] = (
+            mean if old is None else (1 - alpha) * float(old) + alpha * mean
+        )
+        self._set_state(ST_HOUSE_PROFILE, profile)
+        self._schedule_save()
+
+    @callback
+    def _house_kw(self, weekday: int, hour: int) -> float | None:
+        """Geleerd huisverbruik (kW) voor dit vak.
+
+        Zolang een weekdag nog geen eigen meting heeft, telt het gemiddelde van
+        datzelfde uur op de andere dagen; zo is het profiel meteen bruikbaar en
+        specialiseert het per dag naarmate er data binnenkomt.
         """
-        total = 0.0
-        last_slot_end: datetime | None = None
+        profile = self._house_profile()
+        hour %= HOUSE_PROFILE_HOURS
+        value = profile[weekday % HOUSE_PROFILE_DAYS][hour]
+        if value is None:
+            others = [d[hour] for d in profile if d[hour] is not None]
+            if not others:
+                return None
+            value = sum(float(v) for v in others) / len(others)
+        return float(value) / 1000
+
+    @callback
+    def learned_house_w(self) -> float | None:
+        """Geleerd huisverbruik voor het huidige vak, in watt."""
+        now = dt_util.now()
+        kw = self._house_kw(now.weekday(), now.hour)
+        return None if kw is None else kw * 1000
+
+    @callback
+    def _house_kw_at(self, moment: datetime) -> float | None:
+        """Geleerd huisverbruik (kW) op dit moment, lokale tijd."""
+        local = dt_util.as_local(moment)
+        return self._house_kw(local.weekday(), local.hour)
+
+    @callback
+    def _forecast_slots(self) -> list[ForecastSlot]:
+        """Lees de half-uur-slots uit de gekoppelde Solcast-sensoren."""
+        slots: list[ForecastSlot] = []
         for key in (CONF_SOLCAST_TODAY, CONF_SOLCAST_TOMORROW):
             entity_id = self.conf.get(key)
             if not entity_id:
@@ -313,23 +451,76 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             st = self.hass.states.get(entity_id)
             if st is None:
                 continue
-            fc = st.attributes.get("detailedForecast")
-            if not fc:
-                continue
-            for item in fc:
-                ts = dt_util.parse_datetime(str(item.get("period_start")))
-                if ts is None:
+            for item in st.attributes.get("detailedForecast") or ():
+                start = dt_util.parse_datetime(str(item.get("period_start")))
+                if start is None:
                     continue
-                slot_end = ts + timedelta(minutes=30)
-                if last_slot_end is None or slot_end > last_slot_end:
-                    last_slot_end = slot_end
-                if slot_end > now and ts < deadline:
-                    try:
-                        total += float(item.get("pv_estimate") or 0)
-                    except (TypeError, ValueError):
-                        pass
-        covers = last_slot_end is not None and last_slot_end >= deadline
-        return round(total, 3), covers
+                try:
+                    kwh = float(item.get("pv_estimate") or 0)
+                except (TypeError, ValueError):
+                    continue
+                raw_p10 = item.get("pv_estimate10")
+                try:
+                    p10 = None if raw_p10 is None else float(raw_p10)
+                except (TypeError, ValueError):
+                    p10 = None
+                slots.append(ForecastSlot(start=start, kwh=kwh, kwh_p10=p10))
+        return slots
+
+    @callback
+    def _grid_max_phase_a(self) -> float | None:
+        """Hoogste fasestroom van de P1-meter; None als niet alle fasen er zijn."""
+        values = []
+        for key in (CONF_GRID_CURRENT_L1, CONF_GRID_CURRENT_L2, CONF_GRID_CURRENT_L3):
+            if not self.conf.get(key):
+                return None
+            value = self._num(key)
+            if value is None:
+                return None
+            values.append(abs(value))
+        return max(values) if values else None
+
+    @callback
+    def _plug_state(self, peb_status: str) -> str:
+        """Zit de kabel in de auto?
+
+        De laadstatus van de auto-integratie is leidend zodra die beschikbaar is:
+        die kent een expliciete losgekoppeld-status, terwijl de lader ook bij een
+        beéindigde laadbeurt nog van alles kan melden. Elke andere waarde geldt
+        als 'kabel zit erin', zodat een onbekende code nooit een reset uitlokt.
+        """
+        entity_id = self.conf.get(CONF_CAR_PLUG_STATUS)
+        if entity_id:
+            st = self.hass.states.get(entity_id)
+            if st is not None and st.state not in _UNAVAILABLE:
+                raw = str(
+                    self.conf.get(CONF_UNPLUGGED_STATES) or DEFAULT_UNPLUGGED_STATES
+                )
+                unplugged = {s.strip().lower() for s in raw.split(",") if s.strip()}
+                self._log_new_plug_value(st.state, peb_status)
+                return PLUG_OUT if st.state.lower() in unplugged else PLUG_IN
+
+        # Terugval zolang de auto-integratie niets levert.
+        if peb_status in CONNECTED_STATES:
+            return PLUG_IN
+        if peb_status in _UNAVAILABLE:
+            return PLUG_UNKNOWN
+        return PLUG_OUT
+
+    @callback
+    def _log_new_plug_value(self, value: str, peb_status: str) -> None:
+        """Log elke nieuwe statuswaarde met context, om de codes te herkennen."""
+        if value in self._seen_plug_values:
+            return
+        self._seen_plug_values.add(value)
+        _LOGGER.info(
+            "peblar_slim_laden: nieuwe waarde voor laadstatus auto: %r "
+            "(lader: %s, laadvermogen: %s W, SoC: %s)",
+            value,
+            peb_status,
+            self._num(CONF_CHARGER_POWER),
+            self._num(CONF_CAR_SOC),
+        )
 
     # ------------------------------------------------------------------
     # Inputs bouwen
@@ -352,7 +543,6 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
 
         # Forecast: Solcast met forecast.solar-fallback.
         fc_today = self._num(CONF_SOLCAST_TODAY_REMAINING)
-        solar_ok = fc_today is not None
         if fc_today is None:
             fc_today = self._num(CONF_FC_TODAY_REMAINING, 0.0) or 0.0
         fc_tomorrow = self._num(CONF_SOLCAST_TOMORROW)
@@ -367,11 +557,16 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         dep_date = self.get_setting(SET_VERTREKDATUM)
 
         # detailedForecast tot de deadline (zelfde parser als calc.compute).
-        solar_before = 0.0
-        detail_ok = False
+        surplus = SolarSurplus()
         _, deadline = parse_departure(now, dep_time, dep_date)
         if deadline is not None:
-            solar_before, detail_ok = self._solar_before_dep(now, deadline)
+            surplus = solar_surplus_before(
+                self._forecast_slots(),
+                now,
+                deadline,
+                float(self.learned.get("forecast_bias") or 1.0),
+                self._house_kw_at,
+            )
 
         # Fase / ampère toestand.
         current_phase = 1 if self._is_on(CONF_SINGLE_PHASE_SWITCH) else 3
@@ -384,6 +579,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         if hit_rate is not None and hit_rate < HIT_RATE_TARGET:
             ramp_bias = clamp((HIT_RATE_TARGET - hit_rate) * 0.5, 0.0, RAMP_BIAS_MAX)
 
+        peb_status = self._str(CONF_CHARGER_STATUS)
         inp = ChargeInputs(
             now=now,
             laadmodus=str(self.get_setting(SET_LAADMODUS)),
@@ -391,7 +587,10 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             other_car=bool(self.get_setting(SET_ANDERE_AUTO)),
             override_limit=bool(self.get_setting(SET_LAADLIMIET_OVERRIDE)),
             preclimate_active=self._is_on(CONF_PRECLIMATE_SWITCH),
-            peb_status=self._str(CONF_CHARGER_STATUS),
+            peb_status=peb_status,
+            prev_peb_status=self._prev_status,
+            plug_state=self._plug_state(peb_status),
+            prev_plug_state=self._prev_plug_state,
             min_a=min_a,
             max_a=max_a,
             pv_marge_watt=float(self.get_setting(SET_PV_MARGE_WATT)),
@@ -407,12 +606,15 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             fc_today_remaining=fc_today,
             fc_tomorrow=fc_tomorrow,
             pv_now_w=pv_now,
-            solar_ok=solar_ok,
-            solar_detail_ok=detail_ok,
-            solar_before_dep_kwh=solar_before,
+            solar_detail_ok=surplus.covers_window,
+            solar_surplus_before_dep_kwh=surplus.kwh,
+            solar_surplus_p10_kwh=surplus.kwh_p10,
+            solar_p10_ok=surplus.p10_ok,
             grid_w=grid_w,
             grid_ok=grid_ok,
             grid_avg_w=grid_avg if grid_avg is not None else grid_w,
+            grid_max_phase_a=self._grid_max_phase_a(),
+            max_net_a=int(self.get_setting(SET_MAX_NET_A)),
             charger_w=charger_w,
             charger_avg_w=charger_avg if charger_avg is not None else charger_w,
             charge_power_now_w=charge_power_now,
@@ -446,6 +648,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         regelen = bool(self.get_setting(SET_REGELEN_ACTIEF))
 
         self._track_pv_daily(now)
+        self._track_house_profile(now)
         await self._handle_capacity(inp, now)
         # W/A leren gebeurt altijd (pure observatie), ook in observe-only.
         if decision.update_wpa:
@@ -455,6 +658,8 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         if regelen and not decision.dep_reset_needed:
             await self._apply_control(inp, decision, now)
 
+        self._prev_status = inp.peb_status
+        self._prev_plug_state = inp.plug_state
         self._schedule_save()
         await self._log_cycle(decision)
         return decision
@@ -478,8 +683,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             self._set_state(ST_PV_DAY_MAX, value)
     async def _handle_capacity(self, inp: ChargeInputs, now: datetime) -> None:
         status = inp.peb_status
-        prev = self._prev_status
-        self._prev_status = status
+        prev = inp.prev_peb_status
         soc = inp.soc_raw
         energy = inp.session_energy_kwh
 
@@ -596,11 +800,10 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
     ) -> None:
         min_a = inp.min_a
 
-        # Rust-stand: lader suspended en geen auto aangesloten -> 1 fase + min A.
-        if d.peb_status == "suspended" and not d.car_here:
-            if not self._is_on(CONF_SINGLE_PHASE_SWITCH):
-                await self._service("switch", "turn_on", CONF_SINGLE_PHASE_SWITCH)
-            await self._set_number(min_a)
+        # Auto losgekoppeld: lader terug naar 1 fase + minimale ampère, zodat de
+        # volgende sessie schoon begint.
+        if d.just_disconnected:
+            await self._reset_to_idle(min_a)
             return
 
         if not d.car_here:
@@ -648,6 +851,13 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
     # ------------------------------------------------------------------
     # Service-/notificatiehelpers
     # ------------------------------------------------------------------
+    async def _reset_to_idle(self, min_a: int) -> None:
+        """Zet de lader terug op 1 fase en de minimale ampère."""
+        await self._set_number(min_a)
+        if not self._is_on(CONF_SINGLE_PHASE_SWITCH):
+            await self._service("switch", "turn_on", CONF_SINGLE_PHASE_SWITCH)
+        _LOGGER.debug("peblar_slim_laden: auto losgekoppeld, lader gereset")
+
     async def _service(self, domain: str, service: str, conf_key: str) -> None:
         entity_id = self.conf.get(conf_key)
         if not entity_id:
@@ -730,6 +940,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             "expected_solar_kwh": d.expected_solar_kwh,
             "behind_schedule": d.behind_schedule,
             "session_energy_kwh": d.session_energy_kwh,
+            "outside_temp": self._num(CONF_OUTSIDE_TEMP),
         }
         try:
             await self.hass.async_add_executor_job(db.insert_cycle, db_url, row)
@@ -748,6 +959,20 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
                 _LOGGER.info("peblar_slim_laden: %s nieuwe laadsessie(s)", n)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("peblar_slim_laden: sessiedetectie mislukt: %s", err)
+
+    async def async_prune_cycles(self, _now=None) -> None:
+        """Ruim cyclusrijen op die buiten het leervenster vallen."""
+        db_url = self.conf.get(CONF_DB_URL)
+        if not db_url:
+            return
+        try:
+            n = await self.hass.async_add_executor_job(
+                db.prune_cycles, db_url, CYCLE_RETENTION_DAYS
+            )
+            if n:
+                _LOGGER.info("peblar_slim_laden: %s oude cyclusrijen verwijderd", n)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("peblar_slim_laden: opschonen mislukt: %s", err)
 
     async def async_forecast_capture(
         self, forecast_kwh: float | None, actual_kwh: float | None
@@ -783,6 +1008,33 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             return
         await self.async_forecast_capture(None, actual)
 
+    @callback
+    def planning_temp(self) -> float | None:
+        """Temperatuur waarop de komende laadsessie naar verwachting plaatsvindt.
+
+        Om 22:00 koelt het nog flink af, dus het gemiddelde van nu en het
+        nachtminimum benadert de sessietemperatuur beter dan de huidige stand.
+        """
+        now_t = self._num(CONF_OUTSIDE_TEMP)
+        if now_t is None:
+            return None
+        night_min = self._num(CONF_NIGHT_MIN_TEMP)
+        return now_t if night_min is None else (now_t + night_min) / 2
+
+    @callback
+    def _kwh_per_pct(self, raw: dict) -> float | None:
+        """Geleerde kWh per procent SoC, gecorrigeerd voor de temperatuur."""
+        value, used_model = kwh_per_pct_at(
+            raw.get("kwh_per_pct"),
+            raw.get("kpp_slope"),
+            raw.get("kpp_intercept"),
+            raw.get("kpp_temp_min"),
+            raw.get("kpp_temp_max"),
+            self.planning_temp(),
+        )
+        self.temp_model_active = used_model
+        return value
+
     async def async_refresh_learned(self, _now=None) -> None:
         """Lees geleerde signalen uit de DB en klem ze (Fase C-E)."""
         db_url = self.conf.get(CONF_DB_URL)
@@ -799,7 +1051,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         learned["forecast_bias"] = (
             clamp(fb, FORECAST_BIAS_MIN, FORECAST_BIAS_MAX) if fb else None
         )
-        kp = raw.get("kwh_per_pct")
+        kp = self._kwh_per_pct(raw)
         # Relatief aan de ingestelde capaciteit klemmen: een uitschieter in de
         # sessiedata mag kwh_needed niet met een factor mis laten rekenen.
         cap_per_pct = float(self.get_setting(SET_ACCU_CAPACITEIT_KWH)) / 100
@@ -834,3 +1086,13 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         """Sluit de hergebruikte DB-verbinding (bij unload)."""
         if self.conf.get(CONF_DB_URL):
             await self.hass.async_add_executor_job(db.close_connection)
+
+    async def async_ensure_schema(self) -> None:
+        """Vul kolommen aan die nieuwere versies nodig hebben."""
+        db_url = self.conf.get(CONF_DB_URL)
+        if not db_url:
+            return
+        try:
+            await self.hass.async_add_executor_job(db.ensure_schema, db_url)
+        except Exception as err:  # noqa: BLE001 - DB nooit fataal
+            _LOGGER.warning("peblar_slim_laden: schemacontrole mislukt: %s", err)

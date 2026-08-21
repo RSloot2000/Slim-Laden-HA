@@ -152,13 +152,14 @@ d = compute(
 )
 check("kwh_per_pct toegepast", abs(d.kwh_needed - 27.5) < 0.01)
 
-# 11) Forecast-bias schaalt de verwachte zon.
+# 11) Forecast-bias schaalt de verwachte zon in de terugvalroute (zonder
+#     half-uur-detail; met detail rekent de coordinator de bias al mee).
 d = compute(
     ChargeInputs(
         now=NOW, laadmodus="Hybride", soc_raw=50, soc_target=100,
         dep_time="18:00:00", dep_date=NOW.date().strftime("%Y-%m-%d"),
-        solar_detail_ok=True, solar_before_dep_kwh=10, zon_benut_factor=1.0,
-        forecast_bias=0.5, grid_ok=True,
+        solar_detail_ok=False, fc_today_remaining=10, pv_now_w=4000,
+        zon_benut_factor=1.0, forecast_bias=0.5, grid_ok=True,
     )
 )
 check("forecast_bias toegepast", abs(d.expected_solar_kwh - 5.0) < 0.01)
@@ -207,14 +208,14 @@ _hybride = dict(
     battery_capacity_kwh=50, dep_time="14:00:00", dep_date=TOMORROW,
     solar_detail_ok=True, zon_benut_factor=1.0, grid_ok=True,
 )
-d = compute(ChargeInputs(solar_before_dep_kwh=40, **_hybride))
+d = compute(ChargeInputs(solar_surplus_before_dep_kwh=40, **_hybride))
 check("Hybride/veel zon: geen netvloer", d.base_floor_w == 0)
 check("Hybride/veel zon: must_charge 0", d.must_charge_w == 0)
 check("Hybride/veel zon: laadpauze", d.solar_pause is True)
 check("Hybride/veel zon: niet laden", d.want_charge is False)
 
 # 16) Zelfde situatie met te weinig zon: 's nachts doorladen op minimaal niveau.
-d = compute(ChargeInputs(solar_before_dep_kwh=5, **_hybride))
+d = compute(ChargeInputs(solar_surplus_before_dep_kwh=5, **_hybride))
 check("Hybride/weinig zon: netvloer > 0", d.base_floor_w > 0)
 check("Hybride/weinig zon: laden", d.want_charge is True)
 check("Hybride/weinig zon: 1 fase", d.desired_phase == 1)
@@ -224,7 +225,7 @@ check("Hybride/weinig zon: geen laadpauze", d.solar_pause is False)
 # 17) Overdag met overschot volgt Hybride gewoon de zon.
 d = compute(
     ChargeInputs(
-        solar_before_dep_kwh=40, charger_w=0, grid_w=-5000,
+        solar_surplus_before_dep_kwh=40, charger_w=0, grid_w=-5000,
         charger_avg_w=0, grid_avg_w=-5000, **_hybride
     )
 )
@@ -294,7 +295,7 @@ def _floor(uren_rest, kwh_rest):
             now=NOW, laadmodus="Hybride", soc_raw=100 - kwh_rest / 0.215,
             soc_target=100, kwh_per_pct=0.215, dep_time=dep.strftime("%H:%M:%S"),
             dep_date=dep.date().strftime("%Y-%m-%d"), grid_ok=True,
-            solar_detail_ok=True, solar_before_dep_kwh=0.0,
+            solar_detail_ok=True, solar_surplus_before_dep_kwh=0.0,
         )
     ).base_floor_w
 
@@ -314,6 +315,118 @@ d = compute(ChargeInputs(soc_raw=99, charge_now_on=True, **_klaar))
 check("Tijdens laden telt elk procent wel", d.kwh_needed > 0)
 d = compute(ChargeInputs(soc_raw=95, charge_now_on=False, **_klaar))
 check("Grotere terugval start wel weer", d.kwh_needed > 0)
+
+# 26) Schone start: alleen resetten bij loskoppelen, niet bij een laadstop.
+_plug = dict(now=NOW, laadmodus="Hybride", soc_raw=99, soc_target=100, grid_ok=True)
+d = compute(ChargeInputs(peb_status="suspended", plug_state="plugged",
+                         prev_plug_state="plugged", **_plug))
+check("Laadstop met kabel erin: geen reset", d.just_disconnected is False)
+d = compute(ChargeInputs(peb_status="idle", plug_state="unplugged",
+                         prev_plug_state="plugged", **_plug))
+check("Losgekoppeld: reset", d.just_disconnected is True)
+d = compute(ChargeInputs(peb_status="idle", plug_state="unplugged",
+                         prev_plug_state="unplugged", **_plug))
+check("Blijft losgekoppeld: eenmalig", d.just_disconnected is False)
+d = compute(ChargeInputs(peb_status="unknown", plug_state="unknown",
+                         prev_plug_state="plugged", **_plug))
+check("Status onbekend: geen reset", d.just_disconnected is False)
+
+# 27) Zonoverschot is al netto: de benutfactor mag er niet nog eens overheen.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Hybride", soc_raw=50, soc_target=100,
+        battery_capacity_kwh=25, dep_time="18:00:00",
+        dep_date=NOW.date().strftime("%Y-%m-%d"), grid_ok=True,
+        solar_detail_ok=True, solar_surplus_before_dep_kwh=8.0,
+        zon_benut_factor=0.6, forecast_bias=0.87,
+    )
+)
+check("Netto overschot ongewijzigd overgenomen", abs(d.expected_solar_kwh - 8.0) < 0.01)
+
+# 28) Zon-slots: huisverbruik eraf, deel-slots naar rato, P10 apart.
+ForecastSlot = calc.ForecastSlot
+surplus = calc.solar_surplus_before
+
+T0 = NOW.replace(hour=10, minute=0)
+slots = [ForecastSlot(start=T0 + timedelta(minutes=30 * i), kwh=1.0, kwh_p10=0.6)
+         for i in range(4)]
+r = surplus(slots, T0, T0 + timedelta(hours=2), 1.0, lambda t: None)
+check("Slots zonder huisverbruik", abs(r.kwh - 4.0) < 0.001)
+check("P10 apart geteld", abs(r.kwh_p10 - 2.4) < 0.001)
+check("P10 beschikbaar", r.p10_ok is True)
+check("Venster gedekt", r.covers_window is True)
+
+r = surplus(slots, T0, T0 + timedelta(hours=2), 1.0, lambda t: 0.4)
+check("Huisverbruik eraf", abs(r.kwh - (4 - 4 * 0.2)) < 0.001)
+
+r = surplus(slots, T0 + timedelta(minutes=15), T0 + timedelta(minutes=45), 1.0,
+            lambda t: None)
+check("Deel-slots naar rato", abs(r.kwh - 1.0) < 0.001)
+
+r = surplus(slots, T0, T0 + timedelta(hours=4), 1.0, lambda t: None)
+check("Onvolledig venster gemeld", r.covers_window is False)
+
+r = surplus([ForecastSlot(start=T0, kwh=0.2)], T0, T0 + timedelta(minutes=30), 1.0,
+            lambda t: 1.0)
+check("Overschot nooit negatief", r.kwh == 0.0)
+check("Zonder P10 valt hij terug op P50", r.p10_ok is False)
+
+# 29) Hoofdzekering: laadstroom direct terug, ongeacht cooldown.
+_fuse = dict(
+    now=NOW, laadmodus="Snel", soc_raw=50, soc_target=100, grid_ok=True,
+    current_amps=16, max_net_a=25, seconds_since_amp_change=0,
+    peb_status="charging", charge_now_on=True, plug_state="plugged",
+    prev_plug_state="plugged",
+)
+d = compute(ChargeInputs(grid_max_phase_a=20.0, **_fuse))
+check("Ruimte over: geen ingreep", d.mains_overload is False and d.amps_set == 16)
+d = compute(ChargeInputs(grid_max_phase_a=27.0, **_fuse))
+check("Overbelasting: amperage omlaag", d.mains_overload is True and d.amps_set == 13)
+check("Headroom negatief gemeld", d.mains_headroom_a == -3.0)
+d = compute(ChargeInputs(grid_max_phase_a=40.0, **_fuse))
+check("Zware overbelasting: laden uit", d.set_charge_on is False)
+d = compute(ChargeInputs(grid_max_phase_a=None, **_fuse))
+check("Zonder fasedata: geen bewaking", d.mains_overload is False)
+
+# 30) ETA op het huidige laadvermogen.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Snel", soc_raw=50, soc_target=100, kwh_per_pct=0.25,
+        peb_status="charging", charge_now_on=True, grid_ok=True,
+    )
+)
+uren = (d.eta_full - NOW).total_seconds() / 3600
+check("ETA berekend", abs(uren - d.kwh_needed / (d.target_w / 1000)) < 0.01)
+d = compute(ChargeInputs(now=NOW, laadmodus="Zon", soc_raw=50, grid_ok=True))
+check("Geen laden: geen ETA", d.eta_full is None)
+
+# 31) Temperatuurmodel voor kWh per procent SoC.
+kpp = calc.kwh_per_pct_at
+# Zomerfit: 0.245 bij 20 C, 0.305 bij 0 C  ->  helling -0.003
+FIT = dict(slope=-0.003, intercept=0.305, t_min=-2.0, t_max=22.0)
+v, used = kpp(base=0.26, temp=20.0, **FIT)
+check("Model actief bij genoeg spreiding", used is True)
+check("Warme nacht: lage waarde", abs(v - 0.245) < 0.001)
+v, _ = kpp(base=0.26, temp=0.0, **FIT)
+check("Koude nacht: hogere waarde", abs(v - 0.305) < 0.001)
+
+v, used = kpp(base=0.26, temp=20.0, slope=-0.003, intercept=0.305,
+              t_min=15.0, t_max=20.0)
+check("Te weinig spreiding: gemiddelde", used is False and v == 0.26)
+
+v, used = kpp(base=0.26, temp=5.0, slope=0.004, intercept=0.2,
+              t_min=-5.0, t_max=25.0)
+check("Onzinnige helling: gemiddelde", used is False and v == 0.26)
+
+v, used = kpp(base=0.26, temp=-40.0, **FIT)
+check("Extrapolatie begrensd", used is True and abs(v - (0.305 + -0.003 * -7.0)) < 1e-9)
+
+v, used = kpp(base=0.26, temp=None, **FIT)
+check("Geen temperatuur: gemiddelde", used is False and v == 0.26)
+
+v, used = kpp(base=None, slope=None, intercept=None, t_min=None, t_max=None,
+              temp=10.0)
+check("Nog niets geleerd", used is False and v is None)
 
 # 15) Deadline-modus blijft op 3 fasen ondanks net-import.
 d = compute(

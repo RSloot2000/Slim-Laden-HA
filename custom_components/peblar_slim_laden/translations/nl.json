@@ -26,7 +26,21 @@
           "fc_today_remaining": "Fallback resterend vandaag",
           "fc_tomorrow": "Fallback morgen",
           "fc_now_power": "Fallback huidig vermogen",
-          "db_url": "TimescaleDB URL"
+          "db_url": "TimescaleDB URL",
+          "car_plug_status": "Laadstatus auto (met losgekoppeld-status)",
+          "unplugged_states": "Statuswaarden die 'losgekoppeld' betekenen (kommagescheiden)",
+          "grid_current_l1": "Netstroom L1 (A)",
+          "grid_current_l2": "Netstroom L2 (A)",
+          "grid_current_l3": "Netstroom L3 (A)",
+          "outside_temp": "Buitentemperatuur (actueel)",
+          "night_min_temp": "Minimumtemperatuur komende nacht"
+        },
+        "data_description": {
+          "car_plug_status": "Laadstatus uit de auto-integratie, bv. sensor.<auto>_charging_status.",
+          "unplugged_states": "Ruwe statuswaarden die 'kabel eruit' betekenen. Mercedes: 3 = Losgekoppeld.",
+          "grid_current_l1": "Per fase nodig voor de hoofdzekering-bewaking; laat leeg om die uit te zetten.",
+          "outside_temp": "Wordt per cyclus gelogd; hiermee leert hij het extra laadverlies in de kou.",
+          "night_min_temp": "Optioneel, bv. 'min temp morgen'. Verbetert de schatting voor nachtladen."
         }
       }
     },
@@ -64,7 +78,21 @@
           "fc_today_remaining": "Fallback resterend vandaag",
           "fc_tomorrow": "Fallback morgen",
           "fc_now_power": "Fallback huidig vermogen",
-          "db_url": "TimescaleDB URL"
+          "db_url": "TimescaleDB URL",
+          "car_plug_status": "Laadstatus auto (met losgekoppeld-status)",
+          "unplugged_states": "Statuswaarden die 'losgekoppeld' betekenen (kommagescheiden)",
+          "grid_current_l1": "Netstroom L1 (A)",
+          "grid_current_l2": "Netstroom L2 (A)",
+          "grid_current_l3": "Netstroom L3 (A)",
+          "outside_temp": "Buitentemperatuur (actueel)",
+          "night_min_temp": "Minimumtemperatuur komende nacht"
+        },
+        "data_description": {
+          "car_plug_status": "Laadstatus uit de auto-integratie, bv. sensor.<auto>_charging_status.",
+          "unplugged_states": "Ruwe statuswaarden die 'kabel eruit' betekenen. Mercedes: 3 = Losgekoppeld.",
+          "grid_current_l1": "Per fase nodig voor de hoofdzekering-bewaking; laat leeg om die uit te zetten.",
+          "outside_temp": "Wordt per cyclus gelogd; hiermee leert hij het extra laadverlies in de kou.",
+          "night_min_temp": "Optioneel, bv. 'min temp morgen'. Verbetert de schatting voor nachtladen."
         }
       }
     },
@@ -74,64 +102,180 @@
   },
   "entity": {
     "binary_sensor": {
-      "behind_schedule": { "name": "Achter op schema" },
-      "want_charge": { "name": "Laadbehoefte" },
-      "car_here": { "name": "Auto aangesloten" },
-      "solar_pause": { "name": "Laadpauze (wacht op zon)" },
-      "solar_only": { "name": "Alleen zonoverschot" }
+      "behind_schedule": {
+        "name": "Achter op schema"
+      },
+      "want_charge": {
+        "name": "Laadbehoefte"
+      },
+      "car_here": {
+        "name": "Auto aangesloten"
+      },
+      "solar_pause": {
+        "name": "Laadpauze (wacht op zon)"
+      },
+      "solar_only": {
+        "name": "Alleen zonoverschot"
+      }
     },
     "sensor": {
-      "soc_now": { "name": "SoC nu" },
-      "kwh_needed": { "name": "Benodigde energie" },
-      "hours_left": { "name": "Uren tot deadline" },
-      "amps_set": { "name": "Ampère ingesteld" },
-      "charger_w": { "name": "Laadvermogen" },
-      "grid_w": { "name": "Netvermogen" },
-      "pv_now_w": { "name": "PV nu" },
-      "available_solar_w": { "name": "Beschikbaar zonoverschot" },
-      "base_floor_w": { "name": "Grid-vloer" },
-      "must_charge_w": { "name": "Must-charge" },
-      "target_w": { "name": "Target" },
-      "ramp_factor": { "name": "Ramp-factor" },
-      "urgentie": { "name": "Urgentie" },
-      "real_w_per_a": { "name": "W per A (geleerd)" },
-      "wpa_meas": { "name": "W per A (gemeten)" },
-      "expected_solar_kwh": { "name": "Verwachte zon" },
-      "desired_phase": { "name": "Gewenste fase" },
-      "current_phase": { "name": "Huidige fase" },
-      "laadmodus_actief": { "name": "Laadmodus (actief)" },
-      "db_status": { "name": "DB-status" },
-      "forecast_bias": { "name": "Forecast-bias (geleerd)" },
-      "kwh_per_pct": { "name": "kWh per % (geleerd)" },
-      "wpa_1p": { "name": "W per A 1-fase (geleerd)" },
-      "wpa_3p": { "name": "W per A 3-fase (geleerd)" },
-      "hit_rate": { "name": "Doel-SoC hitrate (geleerd)" }
+      "soc_now": {
+        "name": "SoC nu"
+      },
+      "kwh_needed": {
+        "name": "Benodigde energie"
+      },
+      "hours_left": {
+        "name": "Uren tot deadline"
+      },
+      "amps_set": {
+        "name": "Ampère ingesteld"
+      },
+      "charger_w": {
+        "name": "Laadvermogen"
+      },
+      "grid_w": {
+        "name": "Netvermogen"
+      },
+      "pv_now_w": {
+        "name": "PV nu"
+      },
+      "available_solar_w": {
+        "name": "Beschikbaar zonoverschot"
+      },
+      "base_floor_w": {
+        "name": "Grid-vloer"
+      },
+      "must_charge_w": {
+        "name": "Must-charge"
+      },
+      "target_w": {
+        "name": "Target"
+      },
+      "ramp_factor": {
+        "name": "Ramp-factor"
+      },
+      "urgentie": {
+        "name": "Urgentie"
+      },
+      "real_w_per_a": {
+        "name": "W per A (geleerd)"
+      },
+      "wpa_meas": {
+        "name": "W per A (gemeten)"
+      },
+      "expected_solar_kwh": {
+        "name": "Verwachte zon"
+      },
+      "desired_phase": {
+        "name": "Gewenste fase"
+      },
+      "current_phase": {
+        "name": "Huidige fase"
+      },
+      "laadmodus_actief": {
+        "name": "Laadmodus (actief)"
+      },
+      "db_status": {
+        "name": "DB-status"
+      },
+      "forecast_bias": {
+        "name": "Forecast-bias (geleerd)"
+      },
+      "kwh_per_pct": {
+        "name": "kWh per % (geleerd)"
+      },
+      "wpa_1p": {
+        "name": "W per A 1-fase (geleerd)"
+      },
+      "wpa_3p": {
+        "name": "W per A 3-fase (geleerd)"
+      },
+      "hit_rate": {
+        "name": "Doel-SoC hitrate (geleerd)"
+      },
+      "house_now_w": {
+        "name": "Huisverbruik"
+      },
+      "house_expected_w": {
+        "name": "Huisverbruik dit uur (geleerd)"
+      },
+      "eta_full": {
+        "name": "Verwacht klaar om"
+      },
+      "mains_headroom_a": {
+        "name": "Ruimte op hoofdzekering"
+      },
+      "planning_temp": {
+        "name": "Plantemperatuur"
+      },
+      "temp_model": {
+        "name": "Temperatuurmodel"
+      }
     },
     "number": {
-      "doel_soc": { "name": "Doel-SoC" },
-      "accu_capaciteit_kwh": { "name": "Accu-capaciteit" },
-      "pv_marge_watt": { "name": "PV-marge" },
-      "laadvermogen_min_a": { "name": "Laadvermogen min" },
-      "laadvermogen_max_a": { "name": "Laadvermogen max" },
-      "zon_benut_factor": { "name": "Zon benut-factor" },
-      "fasewissel_min_minuten": { "name": "Fasewissel min-interval" }
+      "doel_soc": {
+        "name": "Doel-SoC"
+      },
+      "accu_capaciteit_kwh": {
+        "name": "Accu-capaciteit"
+      },
+      "pv_marge_watt": {
+        "name": "PV-marge"
+      },
+      "laadvermogen_min_a": {
+        "name": "Laadvermogen min"
+      },
+      "laadvermogen_max_a": {
+        "name": "Laadvermogen max"
+      },
+      "zon_benut_factor": {
+        "name": "Zon benut-factor"
+      },
+      "fasewissel_min_minuten": {
+        "name": "Fasewissel min-interval"
+      },
+      "huisverbruik_geheugen_dagen": {
+        "name": "Huisverbruik leerperiode"
+      },
+      "max_netstroom_a": {
+        "name": "Hoofdzekering per fase"
+      }
     },
     "switch": {
-      "regelen_actief": { "name": "Regelen actief" },
-      "slim_laden_aan": { "name": "Slim laden aan" },
-      "laadlimiet_override": { "name": "Laadlimiet override" },
-      "andere_auto_aan_lader": { "name": "Andere auto aan lader" },
-      "dagelijkse_vertrektijd": { "name": "Dagelijkse vertrektijd" },
-      "peblar_debug": { "name": "Debug-meldingen" }
+      "regelen_actief": {
+        "name": "Regelen actief"
+      },
+      "slim_laden_aan": {
+        "name": "Slim laden aan"
+      },
+      "laadlimiet_override": {
+        "name": "Laadlimiet override"
+      },
+      "andere_auto_aan_lader": {
+        "name": "Andere auto aan lader"
+      },
+      "dagelijkse_vertrektijd": {
+        "name": "Dagelijkse vertrektijd"
+      },
+      "peblar_debug": {
+        "name": "Debug-meldingen"
+      }
     },
     "select": {
-      "laadmodus": { "name": "Laadmodus" }
+      "laadmodus": {
+        "name": "Laadmodus"
+      }
     },
     "time": {
-      "vertrektijd": { "name": "Vertrektijd" }
+      "vertrektijd": {
+        "name": "Vertrektijd"
+      }
     },
     "date": {
-      "vertrekdatum": { "name": "Vertrekdatum" }
+      "vertrekdatum": {
+        "name": "Vertrekdatum"
+      }
     }
   }
 }

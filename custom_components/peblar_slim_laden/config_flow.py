@@ -16,6 +16,7 @@ from homeassistant.helpers import selector
 
 from . import db
 from .const import (
+    CONF_CAR_PLUG_STATUS,
     CONF_CAR_SOC,
     CONF_CHARGE_LIMIT_NUMBER,
     CONF_CHARGE_SWITCH,
@@ -27,7 +28,12 @@ from .const import (
     CONF_FC_NOW_POWER,
     CONF_FC_TODAY_REMAINING,
     CONF_FC_TOMORROW,
+    CONF_GRID_CURRENT_L1,
+    CONF_GRID_CURRENT_L2,
+    CONF_GRID_CURRENT_L3,
     CONF_GRID_POWER,
+    CONF_NIGHT_MIN_TEMP,
+    CONF_OUTSIDE_TEMP,
     CONF_PRECLIMATE_SWITCH,
     CONF_PV_DAILY_ENERGY,
     CONF_PV_POWER,
@@ -38,6 +44,8 @@ from .const import (
     CONF_SOLCAST_TODAY,
     CONF_SOLCAST_TODAY_REMAINING,
     CONF_SOLCAST_TOMORROW,
+    CONF_UNPLUGGED_STATES,
+    DEFAULT_UNPLUGGED_STATES,
     DOMAIN,
     OPTIONAL_ENTITY_KEYS,
     REQUIRED_ENTITY_KEYS,
@@ -53,7 +61,11 @@ _ENTITY_DOMAINS: dict[str, list[str]] = {
     CONF_CHARGER_WARNINGS: ["binary_sensor"],
     CONF_CHARGER_FAULTS: ["binary_sensor"],
     CONF_CAR_SOC: ["sensor"],
+    CONF_CAR_PLUG_STATUS: ["sensor", "binary_sensor"],
     CONF_GRID_POWER: ["sensor"],
+    CONF_GRID_CURRENT_L1: ["sensor"],
+    CONF_GRID_CURRENT_L2: ["sensor"],
+    CONF_GRID_CURRENT_L3: ["sensor"],
     CONF_PV_POWER: ["sensor"],
     CONF_CHARGE_SWITCH: ["switch"],
     CONF_SINGLE_PHASE_SWITCH: ["switch"],
@@ -61,6 +73,8 @@ _ENTITY_DOMAINS: dict[str, list[str]] = {
     CONF_RESTART_BUTTON: ["button"],
     CONF_PRECLIMATE_SWITCH: ["switch"],
     CONF_PV_DAILY_ENERGY: ["sensor"],
+    CONF_OUTSIDE_TEMP: ["sensor"],
+    CONF_NIGHT_MIN_TEMP: ["sensor"],
     CONF_SOLCAST_TODAY_REMAINING: ["sensor"],
     CONF_SOLCAST_TOMORROW: ["sensor"],
     CONF_SOLCAST_NOW_POWER: ["sensor"],
@@ -93,6 +107,13 @@ def _build_schema(defaults: dict[str, Any]) -> vol.Schema:
             else vol.Optional(key)
         )
         fields[marker] = _entity_selector(key)
+    states_marker = vol.Optional(
+        CONF_UNPLUGGED_STATES,
+        default=defaults.get(CONF_UNPLUGGED_STATES, DEFAULT_UNPLUGGED_STATES),
+    )
+    fields[states_marker] = selector.TextSelector(
+        selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+    )
     db_marker = (
         vol.Optional(CONF_DB_URL, default=defaults[CONF_DB_URL])
         if CONF_DB_URL in defaults

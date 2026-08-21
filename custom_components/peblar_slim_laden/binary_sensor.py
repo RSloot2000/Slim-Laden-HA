@@ -11,6 +11,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -33,12 +34,14 @@ BINARY_SENSORS: tuple[PeblarBinarySensorDescription, ...] = (
         translation_key="behind_schedule",
         name="Achter op schema",
         device_class=BinarySensorDeviceClass.PROBLEM,
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: d.behind_schedule,
     ),
     PeblarBinarySensorDescription(
         key="want_charge",
         translation_key="want_charge",
         name="Laadbehoefte",
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: d.want_charge,
     ),
     PeblarBinarySensorDescription(
@@ -46,18 +49,21 @@ BINARY_SENSORS: tuple[PeblarBinarySensorDescription, ...] = (
         translation_key="car_here",
         name="Auto aangesloten",
         device_class=BinarySensorDeviceClass.PLUG,
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: d.car_here,
     ),
     PeblarBinarySensorDescription(
         key="solar_pause",
         translation_key="solar_pause",
         name="Laadpauze (wacht op zon)",
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: d.solar_pause,
     ),
     PeblarBinarySensorDescription(
         key="solar_only",
         translation_key="solar_only",
         name="Alleen zonoverschot",
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: d.solar_only,
     ),
 )
