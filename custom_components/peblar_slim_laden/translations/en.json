@@ -6,34 +6,34 @@
         "description": "Link the external entities and (optionally) the TimescaleDB URL.",
         "data": {
           "charger_status": "Charger status",
-          "charger_power": "Charge power",
-          "session_energy": "Session energy",
+          "charger_power": "Charge power (W)",
+          "session_energy": "Session energy (kWh)",
           "charger_warnings": "Warnings (binary_sensor)",
           "charger_faults": "Faults (binary_sensor)",
-          "car_soc": "Car SoC",
-          "grid_power": "Grid power (P1)",
-          "pv_power": "PV current power",
+          "car_soc": "Car SoC (%)",
+          "grid_power": "Grid power P1 (W)",
+          "pv_power": "PV current power (W)",
           "charge_switch": "Charging on/off (switch)",
           "single_phase_switch": "Force single phase (switch)",
-          "charge_limit_number": "Charge limit (number)",
+          "charge_limit_number": "Charge limit (number, A)",
           "restart_button": "Restart button",
           "preclimate_switch": "Preconditioning (switch)",
           "pv_daily_energy": "PV energy today (daily total in kWh)",
-          "solcast_today_remaining": "Solcast remaining today",
-          "solcast_tomorrow": "Solcast tomorrow",
-          "solcast_now_power": "Solcast current power",
+          "solcast_today_remaining": "Solcast remaining today (kWh)",
+          "solcast_tomorrow": "Solcast tomorrow (kWh)",
+          "solcast_now_power": "Solcast current power (W)",
           "solcast_today": "Solcast today (detailedForecast)",
-          "fc_today_remaining": "Fallback remaining today",
-          "fc_tomorrow": "Fallback tomorrow",
-          "fc_now_power": "Fallback current power",
+          "fc_today_remaining": "Fallback remaining today (kWh)",
+          "fc_tomorrow": "Fallback tomorrow (kWh)",
+          "fc_now_power": "Fallback current power (W)",
           "db_url": "TimescaleDB URL",
           "car_plug_status": "Car charging status (with disconnected state)",
           "unplugged_states": "State values meaning 'unplugged' (comma separated)",
           "grid_current_l1": "Grid current L1 (A)",
           "grid_current_l2": "Grid current L2 (A)",
           "grid_current_l3": "Grid current L3 (A)",
-          "outside_temp": "Outside temperature (current)",
-          "night_min_temp": "Minimum temperature tonight"
+          "outside_temp": "Outside temperature current (°C)",
+          "night_min_temp": "Minimum temperature tonight (°C)"
         },
         "data_description": {
           "unplugged_states": "Raw state values meaning 'cable removed'. Mercedes: 3 = disconnected.",
@@ -45,7 +45,8 @@
       "already_configured": "Peblar Smart Charging is already configured."
     },
     "error": {
-      "cannot_connect": "Could not connect to the database (check URL, credentials and whether the peb_ schema exists)."
+      "cannot_connect": "Could not connect to the database (check URL, credentials and whether the peb_ schema exists).",
+      "wrong_unit": "The selected sensor does not have the expected unit. Check that you have not linked a kWh counter to a W field."
     }
   },
   "options": {
@@ -55,34 +56,34 @@
         "description": "Adjust the linked entities or the TimescaleDB URL.",
         "data": {
           "charger_status": "Charger status",
-          "charger_power": "Charge power",
-          "session_energy": "Session energy",
+          "charger_power": "Charge power (W)",
+          "session_energy": "Session energy (kWh)",
           "charger_warnings": "Warnings (binary_sensor)",
           "charger_faults": "Faults (binary_sensor)",
-          "car_soc": "Car SoC",
-          "grid_power": "Grid power (P1)",
-          "pv_power": "PV current power",
+          "car_soc": "Car SoC (%)",
+          "grid_power": "Grid power P1 (W)",
+          "pv_power": "PV current power (W)",
           "charge_switch": "Charging on/off (switch)",
           "single_phase_switch": "Force single phase (switch)",
-          "charge_limit_number": "Charge limit (number)",
+          "charge_limit_number": "Charge limit (number, A)",
           "restart_button": "Restart button",
           "preclimate_switch": "Preconditioning (switch)",
           "pv_daily_energy": "PV energy today (daily total in kWh)",
-          "solcast_today_remaining": "Solcast remaining today",
-          "solcast_tomorrow": "Solcast tomorrow",
-          "solcast_now_power": "Solcast current power",
+          "solcast_today_remaining": "Solcast remaining today (kWh)",
+          "solcast_tomorrow": "Solcast tomorrow (kWh)",
+          "solcast_now_power": "Solcast current power (W)",
           "solcast_today": "Solcast today (detailedForecast)",
-          "fc_today_remaining": "Fallback remaining today",
-          "fc_tomorrow": "Fallback tomorrow",
-          "fc_now_power": "Fallback current power",
+          "fc_today_remaining": "Fallback remaining today (kWh)",
+          "fc_tomorrow": "Fallback tomorrow (kWh)",
+          "fc_now_power": "Fallback current power (W)",
           "db_url": "TimescaleDB URL",
           "car_plug_status": "Car charging status (with disconnected state)",
           "unplugged_states": "State values meaning 'unplugged' (comma separated)",
           "grid_current_l1": "Grid current L1 (A)",
           "grid_current_l2": "Grid current L2 (A)",
           "grid_current_l3": "Grid current L3 (A)",
-          "outside_temp": "Outside temperature (current)",
-          "night_min_temp": "Minimum temperature tonight"
+          "outside_temp": "Outside temperature current (°C)",
+          "night_min_temp": "Minimum temperature tonight (°C)"
         },
         "data_description": {
           "unplugged_states": "Raw state values meaning 'cable removed'. Mercedes: 3 = disconnected.",
@@ -91,7 +92,8 @@
       }
     },
     "error": {
-      "cannot_connect": "Could not connect to the database (check URL, credentials and whether the peb_ schema exists)."
+      "cannot_connect": "Could not connect to the database (check URL, credentials and whether the peb_ schema exists).",
+      "wrong_unit": "The selected sensor does not have the expected unit. Check that you have not linked a kWh counter to a W field."
     }
   },
   "entity": {

@@ -91,6 +91,49 @@ def _entity_selector(conf_key: str) -> selector.EntitySelector:
     )
 
 
+# Verwachte eenheid per veld. Vangt verwisselde sensoren af, zoals een kWh-teller
+# op een veld dat watt verwacht - die fout is aan de entiteitsnaam niet te zien.
+_EXPECTED_UNITS: dict[str, tuple[str, ...]] = {
+    CONF_CHARGER_POWER: ("w", "kw"),
+    CONF_GRID_POWER: ("w", "kw"),
+    CONF_PV_POWER: ("w", "kw"),
+    CONF_SOLCAST_NOW_POWER: ("w", "kw"),
+    CONF_FC_NOW_POWER: ("w", "kw"),
+    CONF_SESSION_ENERGY: ("wh", "kwh"),
+    CONF_PV_DAILY_ENERGY: ("wh", "kwh"),
+    CONF_SOLCAST_TODAY_REMAINING: ("wh", "kwh"),
+    CONF_SOLCAST_TOMORROW: ("wh", "kwh"),
+    CONF_SOLCAST_TODAY: ("wh", "kwh"),
+    CONF_FC_TODAY_REMAINING: ("wh", "kwh"),
+    CONF_FC_TOMORROW: ("wh", "kwh"),
+    CONF_CAR_SOC: ("%",),
+    CONF_GRID_CURRENT_L1: ("a",),
+    CONF_GRID_CURRENT_L2: ("a",),
+    CONF_GRID_CURRENT_L3: ("a",),
+    CONF_CHARGE_LIMIT_NUMBER: ("a",),
+    CONF_OUTSIDE_TEMP: ("°c", "c"),
+    CONF_NIGHT_MIN_TEMP: ("°c", "c"),
+}
+
+
+def _unit_errors(hass, user_input: dict[str, Any]) -> dict[str, str]:
+    """Meld velden waarvan de gekoppelde sensor een onverwachte eenheid heeft."""
+    errors: dict[str, str] = {}
+    for key, units in _EXPECTED_UNITS.items():
+        entity_id = user_input.get(key)
+        if not entity_id:
+            continue
+        state = hass.states.get(entity_id)
+        if state is None:
+            continue
+        unit = state.attributes.get("unit_of_measurement")
+        if unit is None:
+            continue
+        if str(unit).strip().lower() not in units:
+            errors[key] = "wrong_unit"
+    return errors
+
+
 def _build_schema(defaults: dict[str, Any]) -> vol.Schema:
     fields: dict = {}
     for key in REQUIRED_ENTITY_KEYS:
@@ -128,7 +171,7 @@ def _build_schema(defaults: dict[str, Any]) -> vol.Schema:
 
 async def _async_validate(hass, user_input: dict[str, Any]) -> dict[str, str]:
     """Controleer de invoer; geeft een (lege) foutmap per veld terug."""
-    errors: dict[str, str] = {}
+    errors: dict[str, str] = _unit_errors(hass, user_input)
     db_url = user_input.get(CONF_DB_URL)
     if db_url:
         try:

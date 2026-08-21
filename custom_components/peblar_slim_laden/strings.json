@@ -6,34 +6,34 @@
         "description": "Koppel de externe entiteiten en (optioneel) de TimescaleDB-URL.",
         "data": {
           "charger_status": "Lader status",
-          "charger_power": "Laadvermogen",
-          "session_energy": "Sessie-energie",
+          "charger_power": "Laadvermogen (W)",
+          "session_energy": "Sessie-energie (kWh)",
           "charger_warnings": "Waarschuwingen (binary_sensor)",
           "charger_faults": "Fouten (binary_sensor)",
-          "car_soc": "Auto SoC",
-          "grid_power": "Netvermogen (P1)",
-          "pv_power": "PV huidig vermogen",
+          "car_soc": "Auto SoC (%)",
+          "grid_power": "Netvermogen P1 (W)",
+          "pv_power": "PV huidig vermogen (W)",
           "charge_switch": "Laden aan/uit (switch)",
           "single_phase_switch": "Dwing enkelvoudige fase (switch)",
-          "charge_limit_number": "Laadlimiet (number)",
+          "charge_limit_number": "Laadlimiet (number, A)",
           "restart_button": "Herstart-knop (button)",
           "preclimate_switch": "Voorklimatisering (switch)",
           "pv_daily_energy": "PV opbrengst vandaag (dagteller in kWh)",
-          "solcast_today_remaining": "Solcast resterend vandaag",
-          "solcast_tomorrow": "Solcast morgen",
-          "solcast_now_power": "Solcast huidig vermogen",
+          "solcast_today_remaining": "Solcast resterend vandaag (kWh)",
+          "solcast_tomorrow": "Solcast morgen (kWh)",
+          "solcast_now_power": "Solcast huidig vermogen (W)",
           "solcast_today": "Solcast vandaag (detailedForecast)",
-          "fc_today_remaining": "Fallback resterend vandaag",
-          "fc_tomorrow": "Fallback morgen",
-          "fc_now_power": "Fallback huidig vermogen",
+          "fc_today_remaining": "Fallback resterend vandaag (kWh)",
+          "fc_tomorrow": "Fallback morgen (kWh)",
+          "fc_now_power": "Fallback huidig vermogen (W)",
           "db_url": "TimescaleDB URL",
           "car_plug_status": "Laadstatus auto (met losgekoppeld-status)",
           "unplugged_states": "Statuswaarden die 'losgekoppeld' betekenen (kommagescheiden)",
           "grid_current_l1": "Netstroom L1 (A)",
           "grid_current_l2": "Netstroom L2 (A)",
           "grid_current_l3": "Netstroom L3 (A)",
-          "outside_temp": "Buitentemperatuur (actueel)",
-          "night_min_temp": "Minimumtemperatuur komende nacht"
+          "outside_temp": "Buitentemperatuur actueel (°C)",
+          "night_min_temp": "Minimumtemperatuur komende nacht (°C)"
         },
         "data_description": {
           "unplugged_states": "Ruwe statuswaarden die 'kabel eruit' betekenen. Mercedes: 3 = Losgekoppeld.",
@@ -45,7 +45,8 @@
       "already_configured": "Peblar Slim Laden is al geconfigureerd."
     },
     "error": {
-      "cannot_connect": "Verbinden met de database mislukt (controleer URL, inloggegevens en of het peb_-schema bestaat)."
+      "cannot_connect": "Verbinden met de database mislukt (controleer URL, inloggegevens en of het peb_-schema bestaat).",
+      "wrong_unit": "De gekozen sensor heeft niet de verwachte eenheid. Controleer of je niet per ongeluk een kWh-teller op een W-veld hebt gezet."
     }
   },
   "options": {
@@ -55,34 +56,34 @@
         "description": "Pas de gekoppelde entiteiten of de TimescaleDB-URL aan.",
         "data": {
           "charger_status": "Lader status",
-          "charger_power": "Laadvermogen",
-          "session_energy": "Sessie-energie",
+          "charger_power": "Laadvermogen (W)",
+          "session_energy": "Sessie-energie (kWh)",
           "charger_warnings": "Waarschuwingen (binary_sensor)",
           "charger_faults": "Fouten (binary_sensor)",
-          "car_soc": "Auto SoC",
-          "grid_power": "Netvermogen (P1)",
-          "pv_power": "PV huidig vermogen",
+          "car_soc": "Auto SoC (%)",
+          "grid_power": "Netvermogen P1 (W)",
+          "pv_power": "PV huidig vermogen (W)",
           "charge_switch": "Laden aan/uit (switch)",
           "single_phase_switch": "Dwing enkelvoudige fase (switch)",
-          "charge_limit_number": "Laadlimiet (number)",
+          "charge_limit_number": "Laadlimiet (number, A)",
           "restart_button": "Herstart-knop (button)",
           "preclimate_switch": "Voorklimatisering (switch)",
           "pv_daily_energy": "PV opbrengst vandaag (dagteller in kWh)",
-          "solcast_today_remaining": "Solcast resterend vandaag",
-          "solcast_tomorrow": "Solcast morgen",
-          "solcast_now_power": "Solcast huidig vermogen",
+          "solcast_today_remaining": "Solcast resterend vandaag (kWh)",
+          "solcast_tomorrow": "Solcast morgen (kWh)",
+          "solcast_now_power": "Solcast huidig vermogen (W)",
           "solcast_today": "Solcast vandaag (detailedForecast)",
-          "fc_today_remaining": "Fallback resterend vandaag",
-          "fc_tomorrow": "Fallback morgen",
-          "fc_now_power": "Fallback huidig vermogen",
+          "fc_today_remaining": "Fallback resterend vandaag (kWh)",
+          "fc_tomorrow": "Fallback morgen (kWh)",
+          "fc_now_power": "Fallback huidig vermogen (W)",
           "db_url": "TimescaleDB URL",
           "car_plug_status": "Laadstatus auto (met losgekoppeld-status)",
           "unplugged_states": "Statuswaarden die 'losgekoppeld' betekenen (kommagescheiden)",
           "grid_current_l1": "Netstroom L1 (A)",
           "grid_current_l2": "Netstroom L2 (A)",
           "grid_current_l3": "Netstroom L3 (A)",
-          "outside_temp": "Buitentemperatuur (actueel)",
-          "night_min_temp": "Minimumtemperatuur komende nacht"
+          "outside_temp": "Buitentemperatuur actueel (°C)",
+          "night_min_temp": "Minimumtemperatuur komende nacht (°C)"
         },
         "data_description": {
           "unplugged_states": "Ruwe statuswaarden die 'kabel eruit' betekenen. Mercedes: 3 = Losgekoppeld.",
@@ -91,7 +92,8 @@
       }
     },
     "error": {
-      "cannot_connect": "Verbinden met de database mislukt (controleer URL, inloggegevens en of het peb_-schema bestaat)."
+      "cannot_connect": "Verbinden met de database mislukt (controleer URL, inloggegevens en of het peb_-schema bestaat).",
+      "wrong_unit": "De gekozen sensor heeft niet de verwachte eenheid. Controleer of je niet per ongeluk een kWh-teller op een W-veld hebt gezet."
     }
   },
   "entity": {
