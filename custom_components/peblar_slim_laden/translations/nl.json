@@ -36,11 +36,8 @@
           "night_min_temp": "Minimumtemperatuur komende nacht"
         },
         "data_description": {
-          "car_plug_status": "Laadstatus uit de auto-integratie, bv. sensor.<auto>_charging_status.",
           "unplugged_states": "Ruwe statuswaarden die 'kabel eruit' betekenen. Mercedes: 3 = Losgekoppeld.",
-          "grid_current_l1": "Per fase nodig voor de hoofdzekering-bewaking; laat leeg om die uit te zetten.",
-          "outside_temp": "Wordt per cyclus gelogd; hiermee leert hij het extra laadverlies in de kou.",
-          "night_min_temp": "Optioneel, bv. 'min temp morgen'. Verbetert de schatting voor nachtladen."
+          "grid_current_l1": "Alle drie de fasen zijn nodig voor de hoofdzekering-bewaking; laat leeg om die uit te zetten."
         }
       }
     },
@@ -88,11 +85,8 @@
           "night_min_temp": "Minimumtemperatuur komende nacht"
         },
         "data_description": {
-          "car_plug_status": "Laadstatus uit de auto-integratie, bv. sensor.<auto>_charging_status.",
           "unplugged_states": "Ruwe statuswaarden die 'kabel eruit' betekenen. Mercedes: 3 = Losgekoppeld.",
-          "grid_current_l1": "Per fase nodig voor de hoofdzekering-bewaking; laat leeg om die uit te zetten.",
-          "outside_temp": "Wordt per cyclus gelogd; hiermee leert hij het extra laadverlies in de kou.",
-          "night_min_temp": "Optioneel, bv. 'min temp morgen'. Verbetert de schatting voor nachtladen."
+          "grid_current_l1": "Alle drie de fasen zijn nodig voor de hoofdzekering-bewaking; laat leeg om die uit te zetten."
         }
       }
     },

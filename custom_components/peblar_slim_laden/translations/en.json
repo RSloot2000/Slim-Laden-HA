@@ -36,11 +36,8 @@
           "night_min_temp": "Minimum temperature tonight"
         },
         "data_description": {
-          "car_plug_status": "Charging status from the car integration, e.g. sensor.<car>_charging_status.",
           "unplugged_states": "Raw state values meaning 'cable removed'. Mercedes: 3 = disconnected.",
-          "grid_current_l1": "All three phases are required for main fuse protection; leave empty to disable.",
-          "outside_temp": "Logged each cycle; used to learn the extra charging loss in cold weather.",
-          "night_min_temp": "Optional, e.g. 'min temp tomorrow'. Improves the estimate for overnight charging."
+          "grid_current_l1": "All three phases are required for main fuse protection; leave empty to disable."
         }
       }
     },
@@ -88,11 +85,8 @@
           "night_min_temp": "Minimum temperature tonight"
         },
         "data_description": {
-          "car_plug_status": "Charging status from the car integration, e.g. sensor.<car>_charging_status.",
           "unplugged_states": "Raw state values meaning 'cable removed'. Mercedes: 3 = disconnected.",
-          "grid_current_l1": "All three phases are required for main fuse protection; leave empty to disable.",
-          "outside_temp": "Logged each cycle; used to learn the extra charging loss in cold weather.",
-          "night_min_temp": "Optional, e.g. 'min temp tomorrow'. Improves the estimate for overnight charging."
+          "grid_current_l1": "All three phases are required for main fuse protection; leave empty to disable."
         }
       }
     },
