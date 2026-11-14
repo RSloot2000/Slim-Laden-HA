@@ -49,18 +49,18 @@ def check(name: str, cond: bool) -> None:
         FAILS.append(name)
 
 
-# 1) Geen vertrektijd + Zon-modus: solar_only, geen must_charge.
+# 1) Geen vertrektijd + Zomer-modus zonder deadline: solar_only, geen must_charge.
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Zon", soc_raw=50, soc_target=100,
+        now=NOW, laadmodus="Zomer", soc_raw=50, soc_target=100,
         battery_capacity_kwh=50, grid_ok=True, charger_w=0, grid_w=-1000,
         pv_now_w=1500, dep_time="00:00:00",
     )
 )
-check("Zon: no_departure", d.no_departure)
-check("Zon: solar_only", d.solar_only)
-check("Zon: must_charge==0", d.must_charge_w == 0)
-check("Zon: available_solar>0", d.available_solar_w > 0)
+check("Zomer: no_departure", d.no_departure)
+check("Zomer: solar_only", d.solar_only)
+check("Zomer: must_charge==0", d.must_charge_w == 0)
+check("Zomer: available_solar>0", d.available_solar_w > 0)
 
 # 2) Snel-modus: forced_full, target = max A * 3 fase * 230.
 d = compute(ChargeInputs(now=NOW, laadmodus="Snel", soc_raw=50, max_a=16))
@@ -68,22 +68,22 @@ check("Snel: forced_full", d.forced_full)
 check("Snel: target vol", d.target_w == 15 * 3 * 230)
 check("Snel: desired_phase 3", d.desired_phase == 3)
 
-# 3) Hybride met deadline gepasseerd -> behind_schedule + noodstop.
+# 3) Zomer met deadline gepasseerd -> behind_schedule + noodstop.
 past = NOW - timedelta(hours=1)
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Hybride", soc_raw=40, soc_target=100,
+        now=NOW, laadmodus="Zomer", soc_raw=40, soc_target=100,
         battery_capacity_kwh=50, dep_time=past.strftime("%H:%M:%S"),
         dep_date=NOW.date().strftime("%Y-%m-%d"), grid_ok=True,
     )
 )
-check("Hybride deadline: behind_schedule", d.behind_schedule)
-check("Hybride deadline: must_charge vol vermogen", d.must_charge_w == 15 * 3 * 230)
+check("Zomer deadline: behind_schedule", d.behind_schedule)
+check("Zomer deadline: must_charge vol vermogen", d.must_charge_w == 15 * 3 * 230)
 
 # 4) Preclimate: laden aanhouden ook al is de auto vol (soc==target).
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Hybride", soc_raw=100, soc_target=100,
+        now=NOW, laadmodus="Zomer", soc_raw=100, soc_target=100,
         preclimate_active=True, peb_status="suspended", grid_ok=True,
         charge_now_on=False,
     )
@@ -116,7 +116,7 @@ check("W/A gecorrigeerd voor ampère-offset", abs(d.wpa_meas - 230) < 0.1)
 # 7) Ampère-deadband: geen wijziging zonder cooldown.
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Hybride", soc_raw=50, soc_target=100,
+        now=NOW, laadmodus="Zomer", soc_raw=50, soc_target=100,
         dep_time="18:00:00", dep_date=NOW.date().strftime("%Y-%m-%d"),
         grid_ok=True, current_amps=10, seconds_since_amp_change=5,
         wpa_stored=230,
@@ -127,7 +127,7 @@ check("Deadband: amps blijft 10 zonder cooldown", d.amps_set == 10)
 # 8) SoC-uitval tijdens actief laden: auto blijft "aanwezig" (kan stoppen/regelen).
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Hybride", soc_raw=None, peb_status="charging",
+        now=NOW, laadmodus="Zomer", soc_raw=None, peb_status="charging",
         grid_ok=True,
     )
 )
@@ -137,7 +137,7 @@ check("SoC-uitval: kwh_needed 0", d.kwh_needed == 0)
 # 9) SoC-uitval terwijl gepauzeerd: conservatief -> niet als aanwezig zien.
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Hybride", soc_raw=None, peb_status="suspended",
+        now=NOW, laadmodus="Zomer", soc_raw=None, peb_status="suspended",
         grid_ok=True,
     )
 )
@@ -156,7 +156,7 @@ check("kwh_per_pct toegepast", abs(d.kwh_needed - 27.5) < 0.01)
 #     half-uur-detail; met detail rekent de coordinator de bias al mee).
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Hybride", soc_raw=50, soc_target=100,
+        now=NOW, laadmodus="Zomer", soc_raw=50, soc_target=100,
         dep_time="18:00:00", dep_date=NOW.date().strftime("%Y-%m-%d"),
         solar_detail_ok=False, fc_today_remaining=10, pv_now_w=4000,
         zon_benut_factor=1.0, forecast_bias=0.5, grid_ok=True,
@@ -167,7 +167,7 @@ check("forecast_bias toegepast", abs(d.expected_solar_kwh - 5.0) < 0.01)
 # 12) Per-fase geleerde W/A voedt real_w_per_a.
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Zon", soc_raw=50, current_phase=1,
+        now=NOW, laadmodus="Zomer", soc_raw=50, current_phase=1,
         wpa_1p=210, wpa_3p=225, grid_ok=True,
     )
 )
@@ -182,7 +182,7 @@ check("per-fase W/A 3-fase toegepast", d.real_w_per_a == 225)
 
 # 13) Ramp-bias laat de ramp niet later, maar eerder/gelijk starten.
 _base = dict(
-    now=NOW, laadmodus="Hybride", soc_raw=20, soc_target=100,
+    now=NOW, laadmodus="Zomer", soc_raw=20, soc_target=100,
     dep_time=(NOW + timedelta(hours=3)).strftime("%H:%M:%S"),
     dep_date=NOW.date().strftime("%Y-%m-%d"), battery_capacity_kwh=50,
     max_a=16, grid_ok=True,
@@ -191,67 +191,67 @@ d0 = compute(ChargeInputs(ramp_bias=0.0, **_base))
 d1 = compute(ChargeInputs(ramp_bias=0.15, **_base))
 check("ramp_bias verhoogt (of gelijk) ramp_factor", d1.ramp_factor >= d0.ramp_factor)
 
-# 14) Zon + bewolking op 3 fasen met net-import -> direct terug naar 1 fase.
+# 14) Zomer + bewolking op 3 fasen met net-import -> direct terug naar 1 fase.
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Zon", soc_raw=50, current_phase=3, grid_ok=True,
+        now=NOW, laadmodus="Zomer", soc_raw=50, current_phase=3, grid_ok=True,
         charger_w=4140, charger_avg_w=4140, grid_w=700, grid_avg_w=700,
     )
 )
 check("Bewolking: terug naar 1 fase", d.desired_phase == 1 and d.phase_change_needed)
 
-# 15) Hybride met vertrektijd morgen: de voorspelde zon dekt de behoefte ruim ->
+# 15) Zomer met vertrektijd morgen: de voorspelde zon dekt de behoefte ruim ->
 #     laadpauze, geen netvloer.
 TOMORROW = (NOW + timedelta(days=1)).date().strftime("%Y-%m-%d")
-_hybride = dict(
-    now=NOW, laadmodus="Hybride", soc_raw=50, soc_target=100,
+_zomer = dict(
+    now=NOW, laadmodus="Zomer", soc_raw=50, soc_target=100,
     battery_capacity_kwh=50, dep_time="14:00:00", dep_date=TOMORROW,
     solar_detail_ok=True, zon_benut_factor=1.0, grid_ok=True,
 )
-d = compute(ChargeInputs(solar_surplus_before_dep_kwh=40, **_hybride))
-check("Hybride/veel zon: geen netvloer", d.base_floor_w == 0)
-check("Hybride/veel zon: must_charge 0", d.must_charge_w == 0)
-check("Hybride/veel zon: laadpauze", d.solar_pause is True)
-check("Hybride/veel zon: niet laden", d.want_charge is False)
+d = compute(ChargeInputs(solar_surplus_before_dep_kwh=40, **_zomer))
+check("Zomer/veel zon: geen netvloer", d.base_floor_w == 0)
+check("Zomer/veel zon: must_charge 0", d.must_charge_w == 0)
+check("Zomer/veel zon: laadpauze", d.solar_pause is True)
+check("Zomer/veel zon: niet laden", d.want_charge is False)
 
 # 16) Zelfde situatie met te weinig zon: 's nachts doorladen op minimaal niveau.
-d = compute(ChargeInputs(solar_surplus_before_dep_kwh=5, **_hybride))
-check("Hybride/weinig zon: netvloer > 0", d.base_floor_w > 0)
-check("Hybride/weinig zon: laden", d.want_charge is True)
-check("Hybride/weinig zon: 1 fase", d.desired_phase == 1)
-check("Hybride/weinig zon: minimale ampère", d.amps_set == 6)
-check("Hybride/weinig zon: geen laadpauze", d.solar_pause is False)
+d = compute(ChargeInputs(solar_surplus_before_dep_kwh=5, **_zomer))
+check("Zomer/weinig zon: netvloer > 0", d.base_floor_w > 0)
+check("Zomer/weinig zon: laden", d.want_charge is True)
+check("Zomer/weinig zon: 1 fase", d.desired_phase == 1)
+check("Zomer/weinig zon: minimale ampère", d.amps_set == 6)
+check("Zomer/weinig zon: geen laadpauze", d.solar_pause is False)
 
-# 17) Overdag met overschot volgt Hybride gewoon de zon.
+# 17) Overdag met overschot volgt Zomer gewoon de zon.
 d = compute(
     ChargeInputs(
         solar_surplus_before_dep_kwh=40, charger_w=0, grid_w=-5000,
-        charger_avg_w=0, grid_avg_w=-5000, **_hybride
+        charger_avg_w=0, grid_avg_w=-5000, **_zomer
     )
 )
-check("Hybride/overschot: laden", d.want_charge is True)
-check("Hybride/overschot: target volgt zon", abs(d.target_w - 4950) < 1)
+check("Zomer/overschot: laden", d.want_charge is True)
+check("Zomer/overschot: target volgt zon", abs(d.target_w - 4950) < 1)
 
-# 18) Hybride zonder vertrektijd gedraagt zich als Zon.
+# 18) Zomer zonder vertrektijd gedraagt zich als Zon.
 d = compute(
-    ChargeInputs(now=NOW, laadmodus="Hybride", soc_raw=50, grid_ok=True)
+    ChargeInputs(now=NOW, laadmodus="Zomer", soc_raw=50, grid_ok=True)
 )
-check("Hybride zonder vertrek: solar_only", d.solar_only is True)
+check("Zomer zonder vertrek: solar_only", d.solar_only is True)
 
-# 19) Zon zonder overschot: niet laden.
+# 19) Zomer zonder overschot: niet laden.
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Zon", soc_raw=50, soc_target=100, grid_ok=True,
+        now=NOW, laadmodus="Zomer", soc_raw=50, soc_target=100, grid_ok=True,
         charger_w=0, grid_w=200,
     )
 )
-check("Zon zonder overschot: available 0", d.available_solar_w == 0)
-check("Zon zonder overschot: niet laden", d.want_charge is False)
+check("Zomer zonder overschot: available 0", d.available_solar_w == 0)
+check("Zomer zonder overschot: niet laden", d.want_charge is False)
 
 # 20) Netmeter uitgevallen: geen aantoonbaar overschot (nooit op netimport laden).
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Zon", soc_raw=50, grid_ok=False, pv_now_w=3000,
+        now=NOW, laadmodus="Zomer", soc_raw=50, grid_ok=False, pv_now_w=3000,
     )
 )
 check("Geen netmeter: available 0", d.available_solar_w == 0)
@@ -260,7 +260,7 @@ check("Geen netmeter: niet laden", d.want_charge is False)
 # 21) Andere auto aan de lader: alle slimme logica uit, vol vermogen.
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Zon", other_car=True, peb_status="suspended",
+        now=NOW, laadmodus="Zomer", other_car=True, peb_status="suspended",
         soc_raw=None, max_a=16,
     )
 )
@@ -397,7 +397,7 @@ d = compute(
 )
 uren = (d.eta_full - NOW).total_seconds() / 3600
 check("ETA berekend", abs(uren - d.kwh_needed / (d.target_w / 1000)) < 0.01)
-d = compute(ChargeInputs(now=NOW, laadmodus="Zon", soc_raw=50, grid_ok=True))
+d = compute(ChargeInputs(now=NOW, laadmodus="Zomer", soc_raw=50, grid_ok=True))
 check("Geen laden: geen ETA", d.eta_full is None)
 
 # 31) Temperatuurmodel voor kWh per procent SoC.
@@ -431,13 +431,41 @@ check("Nog niets geleerd", used is False and v is None)
 # 15) Deadline-modus blijft op 3 fasen ondanks net-import.
 d = compute(
     ChargeInputs(
-        now=NOW, laadmodus="Hybride", soc_raw=20, soc_target=100,
+        now=NOW, laadmodus="Zomer", soc_raw=20, soc_target=100,
         dep_time=(NOW + timedelta(hours=1)).strftime("%H:%M:%S"),
         dep_date=NOW.date().strftime("%Y-%m-%d"),
         current_phase=3, grid_ok=True, grid_w=700,
     )
 )
 check("Deadline: blijft op 3 fasen", d.desired_phase == 3)
+
+# Winter-modus testen
+# 32) Winter-modus: altijd min-vermogen, geen afhankelijkheid van zon
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Winter", soc_raw=50, soc_target=100,
+        battery_capacity_kwh=50, dep_time="09:00:00", dep_date=NOW.date().strftime("%Y-%m-%d"),
+        grid_ok=True, current_phase=1,
+    )
+)
+check("Winter: target_w = delivered_amps(min_a) * fase * W/A", d.target_w == 5 * 1 * 230)
+check("Winter: base_floor_w = delivered_amps(min_a) * fase * W/A", d.base_floor_w == 5 * 1 * 230)
+check("Winter: must_charge > 0", d.must_charge_w > 0)
+check("Winter: niet solar_pause", d.solar_pause is False)
+check("Winter: winter_mode True", d.winter_mode is True)
+check("Winter: summer_mode False", d.summer_mode is False)
+
+# 33) Winter-modus: nooit pauzeren op zonoverschot
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Winter", soc_raw=50, soc_target=100,
+        battery_capacity_kwh=50, dep_time="09:00:00", dep_date=NOW.date().strftime("%Y-%m-%d"),
+        grid_ok=True, charger_w=0, grid_w=-5000, pv_now_w=4000,
+        solar_surplus_before_dep_kwh=40, current_phase=1,
+    )
+)
+check("Winter/veel zon: toch laden", d.want_charge is True)
+check("Winter/veel zon: geen laadpauze", d.solar_pause is False)
 
 print()
 if FAILS:

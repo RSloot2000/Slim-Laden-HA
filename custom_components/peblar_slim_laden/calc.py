@@ -211,7 +211,7 @@ class ChargeInputs:
     now: datetime
 
     # Modus / vlaggen
-    laadmodus: str = "Hybride"
+    laadmodus: str = "Zomer"
     slim_laden: bool = True
     other_car: bool = False
     override_limit: bool = False
@@ -290,7 +290,7 @@ class ChargeDecision:
     """Resultaat van één regelcyclus: telemetrie + toe te passen acties."""
 
     # Telemetrie / observability
-    laadmodus: str = "Hybride"
+    laadmodus: str = "Zomer"
     peb_status: str = "unknown"
     soc_now: float = 0.0
     soc_valid: bool = False
@@ -324,6 +324,8 @@ class ChargeDecision:
     # Toestand
     forced_full: bool = False
     solar_only: bool = False
+    summer_mode: bool = False
+    winter_mode: bool = False
     no_departure: bool = True
     car_here: bool = False
     my_car_here: bool = False
@@ -480,15 +482,33 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     d.expected_solar_kwh = expected_solar_kwh
     grid_deficit_kwh = max(0.0, kwh_needed - expected_solar_kwh)
 
+    # --- Modus / target ---
+    forced_full = (
+        inp.override_limit or not inp.slim_laden or inp.other_car
+        or inp.laadmodus == "Snel"
+    )
+    # Zomer = huidige Hybride-gedrag: volgt zonoverschot overdag, laadt met net 's nachts
+    summer_mode = inp.laadmodus == "Zomer"
+    # Winter = altijd min-vermogen, geen afhankelijkheid van zon
+    winter_mode = inp.laadmodus == "Winter"
+    solar_only = not forced_full and (
+        summer_mode and no_departure
+    )
+
     # --- Grid-vloer / ramp (op ACTUELE SoC) ---
     charger_max_w = delivered_amps(max_a) * 3 * NOMINAL_W_PER_A
     # Planningstekort: reken bewust op de ondergrens van de zonvoorspelling. Is
     # het tekort 0, dan hoeft er niets van het net -> laadpauze tot de zon er is.
     planning_deficit_kwh = max(0.0, kwh_needed - planning_solar_kwh)
-    base_floor_w = (
-        0.0 if (no_departure or hours_left <= 0)
-        else planning_deficit_kwh / hours_left * 1000
-    )
+    
+    # Winter-modus: altijd min-vermogen, geen grid-vloer afhankelijk van deadline
+    if winter_mode and not forced_full:
+        base_floor_w = delivered_amps(min_a) * inp.current_phase * NOMINAL_W_PER_A
+    else:
+        base_floor_w = (
+            0.0 if (no_departure or hours_left <= 0)
+            else planning_deficit_kwh / hours_left * 1000
+        )
     d.base_floor_w = base_floor_w
 
     min_time_h = 0.0 if charger_max_w <= 0 else kwh_needed / charger_max_w * 1000
@@ -509,10 +529,14 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
         and (deadline_passed or urgentie >= 1.0)
     )
     d.behind_schedule = behind_schedule
-    must_charge_w = (
-        0.0 if no_departure
-        else (charger_max_w if (deadline_passed or behind_schedule) else ramp_target_w)
-    )
+    # Winter-modus: altijd min-vermogen, geen afhankelijkheid van deadline
+    if winter_mode and not forced_full:
+        must_charge_w = delivered_amps(min_a) * inp.current_phase * NOMINAL_W_PER_A
+    else:
+        must_charge_w = (
+            0.0 if no_departure
+            else (charger_max_w if (deadline_passed or behind_schedule) else ramp_target_w)
+        )
     d.must_charge_w = must_charge_w
 
     # --- Zonoverschot ---
@@ -531,31 +555,33 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     d.available_solar_w = available_solar_w
 
     # --- Modus / target ---
-    forced_full = (
-        inp.override_limit or not inp.slim_laden or inp.other_car
-        or inp.laadmodus == "Snel"
-    )
-    solar_only = not forced_full and (
-        inp.laadmodus == "Zon"
-        or (inp.laadmodus == "Hybride" and no_departure)
-    )
     d.forced_full = forced_full
     d.solar_only = solar_only
+    d.summer_mode = summer_mode
+    d.winter_mode = winter_mode
 
-    target_w = (
-        charger_max_w if forced_full
-        else (available_solar_w if solar_only
-              else max(must_charge_w, available_solar_w))
-    )
-    target_avg_w = (
-        charger_max_w if forced_full
-        else (available_solar_avg_w if solar_only
-              else max(must_charge_w, available_solar_avg_w))
-    )
+    # Winter-modus: always charge at minimum power (min_a), no waiting for sun
+    if winter_mode and not forced_full:
+        # Altijd laden op min-vermogen, ongeacht zon of deadline
+        target_w = delivered_amps(min_a) * inp.current_phase * NOMINAL_W_PER_A
+        target_avg_w = delivered_amps(min_a) * inp.current_phase * NOMINAL_W_PER_A
+    else:
+        target_w = (
+            charger_max_w if forced_full
+            else (available_solar_w if solar_only
+                  else max(must_charge_w, available_solar_w))
+        )
+        target_avg_w = (
+            charger_max_w if forced_full
+            else (available_solar_avg_w if solar_only
+                  else max(must_charge_w, available_solar_avg_w))
+        )
     # Laadpauze: met vertrektijd, maar de verwachte zon dekt het restant en er is
     # nu geen overschot -> wachten tot de zon er weer is.
+    # Winter-modus: nooit pauzeren op zon
     d.solar_pause = (
         not forced_full and not solar_only and not no_departure
+        and not winter_mode
         and must_charge_w <= 0 and available_solar_w <= 0 and kwh_needed > 0
     )
 
@@ -571,8 +597,10 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     three_phase_min_w = delivered_amps(min_a) * 3 * NOMINAL_W_PER_A
     # Fase-omhoog conservatief op het gemiddelde + buffer: voorkomt opschakelen
     # naar 3 fasen bij korte zon-pieken.
+    # Winter-modus: geen automatische fase-op-schakeling
     phase_up_signal_w = (
         target_avg_w if solar_only else max(must_charge_w, available_solar_avg_w)
+        if not winter_mode else min(target_avg_w, three_phase_min_w)
     )
     # Fase-omlaag responsief: neem de LAAGSTE van instantaan en gemiddeld target,
     # zodat terugvallende zon (bewolking) direct wordt herkend en we niet op

@@ -25,7 +25,7 @@ class PeblarLaadmodusSelect(PeblarEntity, SelectEntity):
     _attr_name = "Laadmodus"
     _attr_translation_key = SET_LAADMODUS
     _attr_icon = "mdi:ev-station"
-    _attr_options = LAADMODI
+    _attr_options = LAADMODI  # ["Zomer", "Winter"]
 
     def __init__(self, coordinator: PeblarCoordinator) -> None:
         super().__init__(coordinator)

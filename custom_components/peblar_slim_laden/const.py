@@ -118,11 +118,11 @@ SET_DEBUG = "peblar_debug"
 SET_REGELEN_ACTIEF = "regelen_actief"
 
 # Modus-opties
-LAADMODI = ["Snel", "Zon", "Hybride"]
+LAADMODI = ["Zomer", "Winter"]
 
 # Defaults voor de instel-entiteiten
 DEFAULT_SETTINGS: dict = {
-    SET_LAADMODUS: "Hybride",
+    SET_LAADMODUS: "Zomer",
     SET_DOEL_SOC: 100,
     # Energie aan de laadpaal voor 100% SoC: bruikbare accu (~21,5 kWh op een
     # C300e) gedeeld door het laadrendement. kwh_needed stuurt de netvloer aan
