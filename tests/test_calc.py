@@ -440,32 +440,49 @@ d = compute(
 check("Deadline: blijft op 3 fasen", d.desired_phase == 3)
 
 # Winter-modus testen
-# 32) Winter-modus: altijd min-vermogen, geen afhankelijkheid van zon
+# 32) Winter-modus: volgt de vertajtijd zoals zomer, maar wacht NIET op zon.
+dep = NOW + timedelta(hours=10)
 d = compute(
     ChargeInputs(
         now=NOW, laadmodus="Winter", soc_raw=50, soc_target=100,
-        battery_capacity_kwh=50, dep_time="09:00:00", dep_date=NOW.date().strftime("%Y-%m-%d"),
-        grid_ok=True, current_phase=1,
+        battery_capacity_kwh=50, dep_time=dep.strftime("%H:%M:%S"),
+        dep_date=dep.date().strftime("%Y-%m-%d"), grid_ok=True, current_phase=1,
     )
 )
-check("Winter: target_w = delivered_amps(min_a) * fase * W/A", d.target_w == 5 * 1 * 230)
-check("Winter: base_floor_w = delivered_amps(min_a) * fase * W/A", d.base_floor_w == 5 * 1 * 230)
+check("Winter: vertajtijd -> netvloer > 0", d.base_floor_w > 0)
+check("Winter: target = must_charge (geen zon)", d.target_w == d.must_charge_w)
 check("Winter: must_charge > 0", d.must_charge_w > 0)
+check("Winter: laden", d.want_charge is True)
 check("Winter: niet solar_pause", d.solar_pause is False)
 check("Winter: winter_mode True", d.winter_mode is True)
 check("Winter: summer_mode False", d.summer_mode is False)
 
-# 33) Winter-modus: nooit pauzeren op zonoverschot
+# 33) Winter-modus: ook bij veel voorspelde zon wordt doorgeladen (geen wachtdrag).
 d = compute(
     ChargeInputs(
         now=NOW, laadmodus="Winter", soc_raw=50, soc_target=100,
-        battery_capacity_kwh=50, dep_time="09:00:00", dep_date=NOW.date().strftime("%Y-%m-%d"),
-        grid_ok=True, charger_w=0, grid_w=-5000, pv_now_w=4000,
-        solar_surplus_before_dep_kwh=40, current_phase=1,
+        battery_capacity_kwh=50, dep_time=dep.strftime("%H:%M:%S"),
+        dep_date=dep.date().strftime("%Y-%m-%d"),
+        solar_detail_ok=True, solar_surplus_before_dep_kwh=40, grid_ok=True,
+        charger_w=0, grid_w=-5000, pv_now_w=4000, current_phase=1,
     )
 )
 check("Winter/veel zon: toch laden", d.want_charge is True)
 check("Winter/veel zon: geen laadpauze", d.solar_pause is False)
+check("Winter/veel zon: target zonder zon-term", d.target_w == d.must_charge_w)
+
+# 34) Winter met passende/verstolen vertajtijd: ramp naar max zoals zomer.
+past = NOW - timedelta(hours=1)
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Winter", soc_raw=40, soc_target=100,
+        battery_capacity_kwh=50, dep_time=past.strftime("%H:%M:%S"),
+        dep_date=NOW.date().strftime("%Y-%m-%d"), grid_ok=True, current_phase=3,
+    )
+)
+check("Winter deadline gepasseerd: behind_schedule", d.behind_schedule)
+check("Winter deadline gepasseerd: max vermogen", d.must_charge_w == 15 * 3 * 230)
+check("Winter deadline gepasseerd: laden", d.want_charge is True)
 
 print()
 if FAILS:
