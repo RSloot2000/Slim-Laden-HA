@@ -102,6 +102,28 @@ d = compute(
 )
 check("Preclimate: wpa_meas_valid False", d.wpa_meas_valid is False)
 
+# 5b) Preclimate met hoog vermogen (8 kW) forceert 3 fasen vanaf 1 fase.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=100, soc_target=100,
+        preclimate_active=True, current_phase=1, peb_status="suspended",
+        grid_ok=True,
+    )
+)
+check("Preclimate: doel >= 8000", d.target_w >= 8000)
+check("Preclimate: schakelt naar 3 fasen", d.desired_phase == 3)
+
+# 5c) Instelbaar plafond: laag vermogen blijft op 1 fase en volgt de instelling.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=100, soc_target=100,
+        preclimate_active=True, preclimate_max_w=3000.0, current_phase=1,
+        peb_status="suspended", grid_ok=True,
+    )
+)
+check("Preclimate: doel volgt instelling", 3000 <= d.target_w < 3500)
+check("Preclimate: laag vermogen blijft 1 fase", d.desired_phase == 1)
+
 # 6) W/A-meting geldig zonder preclimate: setpoint 16 A levert 15 A.
 d = compute(
     ChargeInputs(
@@ -470,6 +492,10 @@ d = compute(
 check("Winter/veel zon: toch laden", d.want_charge is True)
 check("Winter/veel zon: geen laadpauze", d.solar_pause is False)
 check("Winter/veel zon: target zonder zon-term", d.target_w == d.must_charge_w)
+check(
+    "Winter/veel zon: toch netvloer (wacht niet op zon)",
+    d.base_floor_w > 0 and d.must_charge_w > 0,
+)
 
 # 34) Winter met passende/verstolen vertajtijd: ramp naar max zoals zomer.
 past = NOW - timedelta(hours=1)
@@ -483,6 +509,79 @@ d = compute(
 check("Winter deadline gepasseerd: behind_schedule", d.behind_schedule)
 check("Winter deadline gepasseerd: max vermogen", d.must_charge_w == 15 * 3 * 230)
 check("Winter deadline gepasseerd: laden", d.want_charge is True)
+
+# ---------------------------------------------------------------------------
+# Onleesbare vertrektijd mag nooit als "deadline verstreken" tellen.
+# ---------------------------------------------------------------------------
+# 35) Malformatige vertrektijden gelden als geen vertrek.
+for bad in ("25:00:00", "12:99:00", "om acht uur", "12", "", None):
+    check(
+        f"has_departure(False) voor {bad!r}",
+        calc.has_departure(bad) is False,
+    )
+check("has_departure(True) voor 07:30:00", calc.has_departure("07:30:00") is True)
+
+# 36) De eigenlijke schade: een onleesbare tijd gaf vroeger hours_left=0 met
+# no_departure=False, dus een vermeende verstreken deadline -> vol vermogen.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=40, soc_target=100,
+        battery_capacity_kwh=50, dep_time="25:00:00", grid_ok=True,
+    )
+)
+check("Onleesbare tijd: no_departure", d.no_departure is True)
+check("Onleesbare tijd: geen behind_schedule", d.behind_schedule is False)
+check("Onleesbare tijd: must_charge 0", d.must_charge_w == 0)
+check("Onleesbare tijd: geen departure_ts", d.departure_ts is None)
+
+# 37) Een geldige vertrektijd wordt wél als timestip doorgegeven (departure_ts).
+dep = NOW + timedelta(hours=9, minutes=30)
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=40, soc_target=100,
+        battery_capacity_kwh=50, dep_time=dep.strftime("%H:%M:%S"),
+        dep_date=dep.date().strftime("%Y-%m-%d"), grid_ok=True,
+    )
+)
+check(
+    "departure_ts = vertrekmoment",
+    d.departure_ts == dep.replace(second=0, microsecond=0),
+)
+
+# ---------------------------------------------------------------------------
+# Huisprofiel: een leeg vak mag niet als nul verbruik tellen.
+# ---------------------------------------------------------------------------
+# 38) Slots van een half uur, 4 kWh bruto over het venster 12:00-14:00.
+deadline = NOW + timedelta(hours=2)
+slots = [
+    calc.ForecastSlot(start=NOW + timedelta(minutes=30 * i), kwh=1.0)
+    for i in range(4)
+]
+
+# Geen geleerd profiel: de grove benutfactor corrigeert het huisverbruik.
+s = calc.solar_surplus_before(slots, NOW, deadline, 1.0, lambda _t: None, 0.6)
+check("Leeg profiel: overschot = factor x bruto", abs(s.kwh - 2.4) < 1e-6)
+check("Leeg profiel: covers_window", s.covers_window is True)
+
+# Factor 1.0 herstelt het oude (te optimistische) gedrag expliciet.
+s = calc.solar_surplus_before(slots, NOW, deadline, 1.0, lambda _t: None, 1.0)
+check("Factor 1.0: volledige opbrengst", abs(s.kwh - 4.0) < 1e-6)
+
+# Wel profiel (0,5 kW): het gemeten verbruik gaat van de opbrengst af.
+s = calc.solar_surplus_before(slots, NOW, deadline, 1.0, lambda _t: 0.5, 0.6)
+check("Profiel bekend: 0,5 kW afgetrokken", abs(s.kwh - 3.0) < 1e-6)
+
+# P10 follows the same correction as P50.
+slots_p10 = [
+    calc.ForecastSlot(start=NOW + timedelta(minutes=30 * i), kwh=1.0, kwh_p10=0.5)
+    for i in range(4)
+]
+# Het huis is onafhankelijk van de zon: de P50-schatting van het huisverbruik
+# krimpt niet mee met de P10-opbrengst, dus de P10-ratio wordt conservatiever.
+s = calc.solar_surplus_before(slots_p10, NOW, deadline, 1.0, lambda _t: None, 0.6)
+check("P10: huiscorrectie vanaf P50", abs(s.kwh_p10 - 0.4) < 1e-6)
+check("P10: lager dan P50-overschot", s.kwh_p10 < s.kwh)
+check("P10: p10_ok", s.p10_ok is True)
 
 print()
 if FAILS:

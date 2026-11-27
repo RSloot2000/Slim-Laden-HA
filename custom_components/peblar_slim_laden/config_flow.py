@@ -93,19 +93,22 @@ def _entity_selector(conf_key: str) -> selector.EntitySelector:
 
 # Verwachte eenheid per veld. Vangt verwisselde sensoren af, zoals een kWh-teller
 # op een veld dat watt verwacht - die fout is aan de entiteitsnaam niet te zien.
+# De eenheid is hier bewust strict: de regellus leest de raw state en verbruikt die
+# als watt resp. kWh zonder schaling. Een sensor in kW of Wh zou dan stil met een
+# factor 1000 misrekenen, dus alleen de schaal die de code echt consumeert is toegelaten.
 _EXPECTED_UNITS: dict[str, tuple[str, ...]] = {
-    CONF_CHARGER_POWER: ("w", "kw"),
-    CONF_GRID_POWER: ("w", "kw"),
-    CONF_PV_POWER: ("w", "kw"),
-    CONF_SOLCAST_NOW_POWER: ("w", "kw"),
-    CONF_FC_NOW_POWER: ("w", "kw"),
-    CONF_SESSION_ENERGY: ("wh", "kwh"),
-    CONF_PV_DAILY_ENERGY: ("wh", "kwh"),
-    CONF_SOLCAST_TODAY_REMAINING: ("wh", "kwh"),
-    CONF_SOLCAST_TOMORROW: ("wh", "kwh"),
-    CONF_SOLCAST_TODAY: ("wh", "kwh"),
-    CONF_FC_TODAY_REMAINING: ("wh", "kwh"),
-    CONF_FC_TOMORROW: ("wh", "kwh"),
+    CONF_CHARGER_POWER: ("w",),
+    CONF_GRID_POWER: ("w",),
+    CONF_PV_POWER: ("w",),
+    CONF_SOLCAST_NOW_POWER: ("w",),
+    CONF_FC_NOW_POWER: ("w",),
+    CONF_SESSION_ENERGY: ("kwh",),
+    CONF_PV_DAILY_ENERGY: ("kwh",),
+    CONF_SOLCAST_TODAY_REMAINING: ("kwh",),
+    CONF_SOLCAST_TOMORROW: ("kwh",),
+    CONF_SOLCAST_TODAY: ("kwh",),
+    CONF_FC_TODAY_REMAINING: ("kwh",),
+    CONF_FC_TOMORROW: ("kwh",),
     CONF_CAR_SOC: ("%",),
     CONF_GRID_CURRENT_L1: ("a",),
     CONF_GRID_CURRENT_L2: ("a",),
@@ -169,6 +172,21 @@ def _build_schema(defaults: dict[str, Any]) -> vol.Schema:
     return vol.Schema(fields)
 
 
+def _normalized(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Schrijf weggelaten optionele velden expliciet als None.
+
+    Een EntitySelector laat een veld weg zodra de gebruiker het wist. De opties
+    worden bij het inlezen over de oorspronkelijke data gemapt
+    (`{**entry.data, **entry.options}`), dus zonder expliciete None zou de oude
+    entiteit uit de eerste configuratie blijven terugkomen.
+    """
+    out = dict(user_input)
+    for key in OPTIONAL_ENTITY_KEYS:
+        out.setdefault(key, None)
+    out.setdefault(CONF_DB_URL, None)
+    return out
+
+
 async def _async_validate(hass, user_input: dict[str, Any]) -> dict[str, str]:
     """Controleer de invoer; geeft een (lege) foutmap per veld terug."""
     errors: dict[str, str] = _unit_errors(hass, user_input)
@@ -195,7 +213,7 @@ class PeblarConfigFlow(ConfigFlow, domain=DOMAIN):
             errors = await _async_validate(self.hass, user_input)
             if not errors:
                 return self.async_create_entry(
-                    title="Peblar Slim Laden", data=user_input
+                    title="Peblar Slim Laden", data=_normalized(user_input)
                 )
 
         return self.async_show_form(
@@ -218,9 +236,24 @@ class PeblarOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            # Het db_url-veld is een password-selector en wordt niet altijd
+            # vooraf ingevuld. Laat de gebruiker de rest van de opties opslaan
+            # zonder het veld aan te raken, dan ontbreekt de sleutel en zou
+            # `_normalized` hem op None zetten: de DB-verbinding valt dan stil
+            # weg. Een expliciet leeg veld ("") is wél een bewuste wis.
+            if not user_input.get(CONF_DB_URL):
+                existing = {
+                    **self.config_entry.data,
+                    **self.config_entry.options,
+                }
+                current = existing.get(CONF_DB_URL)
+                if current and CONF_DB_URL not in user_input:
+                    user_input[CONF_DB_URL] = current
             errors = await _async_validate(self.hass, user_input)
             if not errors:
-                return self.async_create_entry(title="", data=user_input)
+                return self.async_create_entry(
+                    title="", data=_normalized(user_input)
+                )
 
         defaults = user_input or {
             **self.config_entry.data,

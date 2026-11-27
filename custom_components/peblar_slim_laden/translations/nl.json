@@ -219,6 +219,9 @@
       "pv_marge_watt": {
         "name": "PV-marge"
       },
+      "preclimate_max_w": {
+        "name": "Voorklimaat vermogen"
+      },
       "laadvermogen_min_a": {
         "name": "Laadvermogen min"
       },

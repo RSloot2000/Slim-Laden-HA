@@ -100,6 +100,7 @@ from .const import (
     SET_MAX_A,
     SET_MAX_NET_A,
     SET_MIN_A,
+    SET_PRECLIMATE_MAX_W,
     SET_PV_MARGE_WATT,
     SET_REGELEN_ACTIEF,
     SET_SLIM_LADEN_AAN,
@@ -113,6 +114,7 @@ from .const import (
     ST_LAST_CHARGE_SWITCH,
     ST_LAST_PHASE_CHANGE,
     ST_LAST_RESTART,
+    ST_PRECLIMATE_SEEN,
     ST_PV_DAY,
     ST_PV_DAY_MAX,
     ST_RESTART_ATTEMPTS,
@@ -168,6 +170,8 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         self.temp_model_active = False
         self._time_changed_flag = False
         self._stranded_notified = False
+        # True nadat de storingsafhandeling een veilige laadstop heeft afgedwongen.
+        self._fault_blocked = False
         self._last_cycle_log: datetime | None = None
         self._unsub_listeners: list = []
         self.db_status = "unknown"
@@ -566,6 +570,9 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
                 deadline,
                 float(self.learned.get("forecast_bias") or 1.0),
                 self._house_kw_at,
+                # Waar het huisprofiel nog leeg is, geldt deze grove factor in
+                # plaats van "geen verbruik".
+                float(self.get_setting(SET_ZON_BENUT_FACTOR)),
             )
 
         # Fase / ampère toestand.
@@ -595,6 +602,7 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             max_a=max_a,
             pv_marge_watt=float(self.get_setting(SET_PV_MARGE_WATT)),
             zon_benut_factor=float(self.get_setting(SET_ZON_BENUT_FACTOR)),
+            preclimate_max_w=float(self.get_setting(SET_PRECLIMATE_MAX_W)),
             fasewissel_min_minuten=int(self.get_setting(SET_FASEWISSEL_MIN_MINUTEN)),
             soc_raw=self._num(CONF_CAR_SOC),
             soc_target=int(self.get_setting(SET_DOEL_SOC)),
@@ -655,7 +663,10 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             self._set_state(ST_WPA_STORED, clamp(decision.wpa_new, WPA_MIN, WPA_MAX))
         await self._handle_faults(inp, now, regelen)
         await self._handle_departure(decision, now)
-        if regelen and not decision.dep_reset_needed:
+        # Een veilige laadstop door de storingsafhandeling mag niet in dezelfde
+        # cyclus door de regellus ongedaan worden gemaakt: calc weet niets van de
+        # storing en zou de schakelaar weer aanzetten.
+        if regelen and not decision.dep_reset_needed and not self._fault_blocked:
             await self._apply_control(inp, decision, now)
 
         self._prev_status = inp.peb_status
@@ -690,6 +701,15 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         if status == "charging" and prev != "charging":
             self._set_state(ST_SOC_START, soc)
             self._set_state(ST_ENERGY_START, energy)
+            self._set_state(ST_PRECLIMATE_SEEN, bool(inp.preclimate_active))
+            return
+
+        if status == "charging":
+            # Preclimate kan midden in de sessie beginnen; onthoud het zodat de
+            # leerstap aan het eind de hele sessie beoordeelt en niet alleen de
+            # laatste cyclus - anders leert een sessie met klimaatlast mee.
+            if inp.preclimate_active:
+                self._set_state(ST_PRECLIMATE_SEEN, True)
             return
 
         if prev == "charging" and status != "charging":
@@ -700,7 +720,8 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
                 energy_end=energy,
                 old_capacity=float(self.get_setting(SET_ACCU_CAPACITEIT_KWH)),
                 other_car=inp.other_car,
-                preclimate_active=inp.preclimate_active,
+                preclimate_active=bool(self._get_state(ST_PRECLIMATE_SEEN))
+                or inp.preclimate_active,
             )
             if res.updated:
                 self._apply_setting(
@@ -720,21 +741,34 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
     async def _handle_faults(
         self, inp: ChargeInputs, now: datetime, regelen: bool
     ) -> None:
+        # Herstel per cyclus; alleen een actieve veilige stop blokkeert de regeling.
+        self._fault_blocked = False
         warn_active = self._is_on(CONF_CHARGER_WARNINGS)
         err_active = self._is_on(CONF_CHARGER_FAULTS)
         fault_active = warn_active or err_active
         warn_secs_on = self._secs_state(CONF_CHARGER_WARNINGS, "on", now)
         err_secs_on = self._secs_state(CONF_CHARGER_FAULTS, "on", now)
-        warn_secs_off = self._secs_state(CONF_CHARGER_WARNINGS, "off", now)
-        err_secs_off = self._secs_state(CONF_CHARGER_FAULTS, "off", now)
+        clear_s = FAULT_CLEAR_STABIEL_MINUTEN * 60
+
+        def off_long_enough(conf_key: str) -> bool:
+            """Een niet-geconfigureerde storingsentiteit is per definitie in orde.
+
+            Zonder deze uitzondering levert `_secs_state` nul seconden op voor een
+            afweze entiteit, waardoor de teller herstartpogingen nooit gereset
+            wordt en de lader permanent als gestrand blijft staan.
+            """
+            if not self.conf.get(conf_key):
+                return True
+            return self._secs_state(conf_key, "off", now) >= clear_s
+
         attempts = int(self._get_state(ST_RESTART_ATTEMPTS))
         secs_since_restart = self._secs_since(ST_LAST_RESTART, now)
         debug = bool(self.get_setting(SET_DEBUG))
 
         fault_stable_clear = (
             not fault_active
-            and warn_secs_off >= FAULT_CLEAR_STABIEL_MINUTEN * 60
-            and err_secs_off >= FAULT_CLEAR_STABIEL_MINUTEN * 60
+            and off_long_enough(CONF_CHARGER_WARNINGS)
+            and off_long_enough(CONF_CHARGER_FAULTS)
         )
         if fault_stable_clear and attempts > 0:
             self._set_state(ST_RESTART_ATTEMPTS, 0)
@@ -756,6 +790,9 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         )
 
         if charger_stranded:
+            # Blokkeer de regellus voor deze cyclus, anders zet `_apply_control`
+            # de laadschakelaar hieronder weer aan.
+            self._fault_blocked = True
             if self._is_on(CONF_CHARGE_SWITCH):
                 await self._service("switch", "turn_off", CONF_CHARGE_SWITCH)
             if not self._stranded_notified:
@@ -941,6 +978,8 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
             "behind_schedule": d.behind_schedule,
             "session_energy_kwh": d.session_energy_kwh,
             "outside_temp": self._num(CONF_OUTSIDE_TEMP),
+            "departure_ts": d.departure_ts,
+            "preclimate_active": d.preclimate_active,
         }
         try:
             await self.hass.async_add_executor_job(db.insert_cycle, db_url, row)
@@ -1040,8 +1079,13 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         db_url = self.conf.get(CONF_DB_URL)
         if not db_url:
             return
+        # De ingestelde capaciteit bepaalt de band waarbinnen sessierijen als
+        # betrouwbaar gelden; de klem hieronder gebruikt dezelfde noemer.
+        cap_per_pct = float(self.get_setting(SET_ACCU_CAPACITEIT_KWH)) / 100
         try:
-            raw = await self.hass.async_add_executor_job(db.read_learned, db_url)
+            raw = await self.hass.async_add_executor_job(
+                db.read_learned, db_url, cap_per_pct
+            )
         except Exception as err:  # noqa: BLE001 - DB nooit fataal
             _LOGGER.warning("peblar_slim_laden: leren-uitlezen mislukt: %s", err)
             return
@@ -1054,7 +1098,6 @@ class PeblarCoordinator(DataUpdateCoordinator[ChargeDecision]):
         kp = self._kwh_per_pct(raw)
         # Relatief aan de ingestelde capaciteit klemmen: een uitschieter in de
         # sessiedata mag kwh_needed niet met een factor mis laten rekenen.
-        cap_per_pct = float(self.get_setting(SET_ACCU_CAPACITEIT_KWH)) / 100
         if kp:
             clamped = clamp(
                 kp,

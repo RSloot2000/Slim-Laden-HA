@@ -219,6 +219,9 @@
       "pv_marge_watt": {
         "name": "PV margin"
       },
+      "preclimate_max_w": {
+        "name": "Preclimate power"
+      },
       "laadvermogen_min_a": {
         "name": "Charge current min"
       },

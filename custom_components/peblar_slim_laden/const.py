@@ -105,6 +105,11 @@ SET_MAX_A = "laadvermogen_max_a"
 # beschikbaar komt (de rest gaat naar het huisverbruik). Dit is iets anders dan
 # de geleerde forecast_bias, die de voorspelling zelf corrigeert.
 SET_ZON_BENUT_FACTOR = "zon_benut_factor"
+# Vermogen dat de lader vrijmaakt tijdens voorklimatisering. De klimaatlast loopt
+# door de lader maar komt niet in de accu: de auto vraagt 's winters al snel >8 kW.
+# Omdat het laadlimiet een plafond is en geen commando, mag dit royaal zijn - de
+# auto neemt wat hij nodig heeft en de hoofdzekeringwacht bewaakt de grens.
+SET_PRECLIMATE_MAX_W = "preclimate_max_w"
 SET_HUISVERBRUIK_DAGEN = "huisverbruik_geheugen_dagen"
 SET_MAX_NET_A = "max_netstroom_a"
 SET_FASEWISSEL_MIN_MINUTEN = "fasewissel_min_minuten"
@@ -132,6 +137,7 @@ DEFAULT_SETTINGS: dict = {
     SET_MIN_A: 6,
     SET_MAX_A: 16,
     SET_ZON_BENUT_FACTOR: 0.6,
+    SET_PRECLIMATE_MAX_W: 8000.0,
     SET_HUISVERBRUIK_DAGEN: 28,
     SET_MAX_NET_A: 25,
     SET_FASEWISSEL_MIN_MINUTEN: 10,
@@ -157,6 +163,7 @@ ST_LAST_CHARGE_DEMAND = "last_charge_demand"
 ST_LAST_RESTART = "last_restart"
 ST_SOC_START = "soc_start"                        # capaciteit-leren
 ST_ENERGY_START = "energy_start"
+ST_PRECLIMATE_SEEN = "preclimate_seen"            # preclimate tijdens deze laadsessie
 ST_PV_DAY = "pv_daily_day"                        # dag waarop ST_PV_DAY_MAX hoort
 ST_PV_DAY_MAX = "pv_daily_max"
 ST_HOUSE_PROFILE = "house_profile"                # 24 uurgemiddelden huisverbruik (W)
@@ -171,6 +178,7 @@ DEFAULT_STATE: dict = {
     ST_LAST_RESTART: None,
     ST_SOC_START: None,
     ST_ENERGY_START: None,
+    ST_PRECLIMATE_SEEN: False,
     ST_PV_DAY: None,
     ST_PV_DAY_MAX: 0.0,
     ST_HOUSE_PROFILE: None,
@@ -200,7 +208,7 @@ EMERGENCY_IMPORT_W = 400
 CHARGE_SWITCH_MIN_MINUTEN = 5
 STOP_GRACE_MINUTEN = 3
 CHARGING_ACTIVE_W = 500
-PRECLIMATE_POWER_W = 3500.0       # zelfbegrenzing auto bij vol + preclimate
+PRECLIMATE_POWER_W = 8000.0       # terugvalplafond; echte waarde staat in SET_PRECLIMATE_MAX_W
 # Deel van de voorspelde zon waarop de nachtplanning durft te rekenen. Alleen
 # nog gebruikt als Solcast geen P10-band levert; met P10 is de onzekerheid al
 # in de voorspelling zelf verwerkt.
@@ -272,6 +280,13 @@ FORECAST_BIAS_MAX = 1.5
 # boven 1.0 dekt het laadverlies (netzijde meten, accuzijde rekenen).
 KWH_PER_PCT_MIN_FACTOR = 0.90
 KWH_PER_PCT_MAX_FACTOR = 1.40
+# Voorfilter op de ruwe sessierijen, relatief aan de ingestelde capaciteit. Een
+# sessie die met een doorlopende laadteller in plaats van een delta is
+# weggeschreven, of die bij elke laadpauze als nieuwe sessie is afgeknipt, komt
+# met een veel te hoge kWh/% door een absolute band als 0.1..2.0 heen. Die
+# vergiftigt het gemiddelde anoniem; deze band snijdt hem af.
+KPP_MIN_FACTOR = 0.5
+KPP_MAX_FACTOR = 1.8
 
 # Temperatuurmodel voor kwh_per_pct. In de kou daalt het laadrendement en draait
 # de accuconditionering mee, waardoor er meer kWh aan de paal nodig is per procent
@@ -310,5 +325,5 @@ CYCLE_COLS: list[str] = [
     "grid_w", "pv_now_w", "available_solar_w", "base_floor_w", "ramp_factor",
     "urgentie", "must_charge_w", "target_w", "real_w_per_a", "wpa_meas",
     "wpa_meas_valid", "expected_solar_kwh", "behind_schedule",
-    "session_energy_kwh", "outside_temp",
+    "session_energy_kwh", "outside_temp", "departure_ts", "preclimate_active",
 ]

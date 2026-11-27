@@ -87,6 +87,7 @@ def solar_surplus_before(
     deadline: datetime,
     bias: float,
     house_kw: Callable[[datetime], float | None],
+    house_fallback_factor: float = 1.0,
 ) -> SolarSurplus:
     """Tel het zonOVERSCHOT per half uur op tot de deadline.
 
@@ -95,9 +96,16 @@ def solar_surplus_before(
     venster vallen tellen naar rato mee. `covers_window` is alleen True wanneer
     de voorspelling de hele periode tot de deadline dekt - anders zou een
     deelvoorspelling de opbrengst structureel onderschatten.
+
+    Levert het huisprofiel voor een uur niets (`house_kw` geeft None), dan mag
+    dat niet als nul verbruik gelezen worden: de volledige opbrengst zou dan als
+    overschot voor de auto tellen. Zo'n uur wordt dan met
+    `house_fallback_factor` gecorrigeerd, dezelfde grove benutfactor die de
+    route zonder half-uur-detail gebruikt.
     """
     res = SolarSurplus()
     slot_hours = SLOT.total_seconds() / 3600
+    fallback = clamp(house_fallback_factor, 0.0, 1.0)
     last_end: datetime | None = None
     seen_p10 = False
     for slot in slots:
@@ -108,12 +116,18 @@ def solar_surplus_before(
         if hi <= lo:
             continue
         frac = (hi - lo) / SLOT
-        load = house_kw(slot.start)
-        house_kwh = 0.0 if load is None else load * slot_hours * frac
-        res.kwh += max(0.0, slot.kwh * bias * frac - house_kwh)
         p10 = slot.kwh if slot.kwh_p10 is None else slot.kwh_p10
         seen_p10 = seen_p10 or slot.kwh_p10 is not None
-        res.kwh_p10 += max(0.0, p10 * bias * frac - house_kwh)
+        gen_kwh = slot.kwh * bias * frac
+        gen_p10_kwh = p10 * bias * frac
+        load = house_kw(slot.start)
+        house_kwh = (
+            gen_kwh * (1.0 - fallback)
+            if load is None
+            else load * slot_hours * frac
+        )
+        res.kwh += max(0.0, gen_kwh - house_kwh)
+        res.kwh_p10 += max(0.0, gen_p10_kwh - house_kwh)
     res.kwh = round(res.kwh, 3)
     res.kwh_p10 = round(res.kwh_p10, 3)
     res.p10_ok = seen_p10
@@ -174,8 +188,21 @@ def setpoint_for(power_w: float, phase: int, w_per_a: float) -> int:
 
 
 def has_departure(dep_time: str | None) -> bool:
-    """True als er een echte vertrektijd is ingesteld."""
-    return dep_time not in NO_VALUE_STRINGS and dep_time != NO_DEPARTURE_TIME
+    """True als er een geldige, echte vertrektijd is ingesteld.
+
+    De sentinel `00:00:00` betekent "geen vertrek". Een onleesbare waarde telt
+    óók als geen vertrek: blijft `no_departure` anders op False terwijl
+    `parse_departure` geen deadline kan teruggeven, dan blijft `hours_left` op 0
+    staan en beschouwt de regelaar de deadline als verstreken - waarna hij vol
+    vermogen vraagt.
+    """
+    if dep_time in NO_VALUE_STRINGS or dep_time == NO_DEPARTURE_TIME:
+        return False
+    try:
+        h, m, s = (int(x) for x in str(dep_time).split(":"))
+    except (ValueError, TypeError):
+        return False
+    return 0 <= h < 24 and 0 <= m < 60 and 0 <= s < 60
 
 
 def parse_departure(
@@ -228,6 +255,7 @@ class ChargeInputs:
     max_a: int = HW_MAX_A
     pv_marge_watt: float = 50.0
     zon_benut_factor: float = 0.6
+    preclimate_max_w: float = PRECLIMATE_POWER_W
     fasewissel_min_minuten: int = 10
 
     # SoC / accu
@@ -318,6 +346,7 @@ class ChargeDecision:
     behind_schedule: bool = False
     session_energy_kwh: float = 0.0
     eta_full: datetime | None = None     # verwacht moment waarop de doel-SoC gehaald is
+    departure_ts: datetime | None = None  # effectief vertrekmoment van deze cyclus
     mains_overload: bool = False         # hoofdzekering nadert zijn grens
     mains_headroom_a: float | None = None
 
@@ -417,6 +446,7 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
         ).strftime("%Y-%m-%d")
 
     dep_moment, deadline = parse_departure(inp.now, inp.dep_time, inp.dep_date)
+    d.departure_ts = dep_moment
     dep_moment_past = (
         dep_moment is not None and dep_date_valid and inp.now >= dep_moment
     )
@@ -472,8 +502,10 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
             else expected_solar_kwh * SOLAR_TRUST_FACTOR
         )
     else:
-        # Zonder half-uur-detail blijft de grove benutfactor de enige correctie
-        # voor huisverbruik.
+        # Zonder half-uur-detail is de grove benutfactor de enige correctie voor
+        # het huisverbruik. Met detail trekt de coordinator het geleerde profiel
+        # per slot af (en past hij dezelfde factor toe waar het profiel nog leeg
+        # is), dus hier heeft de factor alleen in deze route betekenis.
         expected_solar_kwh = (
             (solar_today_capped_kwh + inp.fc_tomorrow * tomorrow_frac)
             * inp.forecast_bias * inp.zon_benut_factor
@@ -501,12 +533,16 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     # het tekort 0, dan hoeft er niets van het net -> laadpauze tot de zon er is.
     planning_deficit_kwh = max(0.0, kwh_needed - planning_solar_kwh)
     
-    # Netvloer: spreid het verwachte tekort over de resterende tot de deadline.
-    # Winter volgt dezelfde deadline-afhankelijke vloer als zomer; het verschil met
-    # zit in het target (zie onder): winter wacht niet op zonoverschot.
+    # Netvloer: spreid het tekort over de resterende uren tot de deadline.
+    # Zomer rekent het verwachte zonoverschot ervan af (vertrouwt de zonvoorspelling).
+    # Winter rekent niet op zon: het rekent op de volledige behoefte en laadt van
+    # het net, zonder te wachten tot er zonoverschot is.
+    floor_deficit_kwh = (
+        kwh_needed if (winter_mode and not forced_full) else planning_deficit_kwh
+    )
     base_floor_w = (
         0.0 if (no_departure or hours_left <= 0)
-        else planning_deficit_kwh / hours_left * 1000
+        else floor_deficit_kwh / hours_left * 1000
     )
     d.base_floor_w = base_floor_w
 
@@ -588,10 +624,15 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
 
     # --- Preclimate: laden aanhouden + genoeg vermogen (auto zelfbegrenst) ---
     # Geldt in alle niet-geforceerde modi (ook Zon/solar_only): anders trekt de
-    # auto de ~3500W klimaatlast uit de eigen accu i.p.v. de lader.
-    if inp.preclimate_active and not forced_full:
-        target_w = max(target_w, PRECLIMATE_POWER_W)
-        target_avg_w = max(target_avg_w, PRECLIMATE_POWER_W)
+    # auto de klimaatlast ('s winters al snel >8 kW) uit de eigen accu i.p.v. de
+    # lader. Het laadlimiet is een plafond en geen commando, dus een royaal plafond
+    # is veilig: de auto neemt wat hij nodig heeft, de hoofdzekeringwacht bewaakt.
+    preclimate_w = (
+        inp.preclimate_max_w if (inp.preclimate_active and not forced_full) else 0.0
+    )
+    if preclimate_w > 0:
+        target_w = max(target_w, preclimate_w)
+        target_avg_w = max(target_avg_w, preclimate_w)
     d.target_w = target_w
 
     # --- Fasekeuze ---
@@ -599,12 +640,14 @@ def compute(inp: ChargeInputs) -> ChargeDecision:  # noqa: C901 - regellus
     # Fase-omhoog conservatief op het gemiddelde + buffer: voorkomt opschakelen
     # naar 3 fasen bij korte zon-pieken. Winter volgt de deadline-gedreven
     # must_charge_w (geen zon-term), zodat bij een nabije deadline op 3 fasen wordt
-    # opgeschaakt net als bij zomer.
+    # opgeschaakt net als bij zomer. Preclimate telt in elke modus mee: bij >6 kW
+    # klimaatlast past dat niet op 1 fase en moet de lader dus op 3 fasen.
     phase_up_signal_w = (
         target_avg_w if solar_only
         else must_charge_w if winter_mode
         else max(must_charge_w, available_solar_avg_w)
     )
+    phase_up_signal_w = max(phase_up_signal_w, preclimate_w)
     # Fase-omlaag responsief: neem de LAAGSTE van instantaan en gemiddeld target,
     # zodat terugvallende zon (bewolking) direct wordt herkend en we niet op
     # 3 fasen blijven hangen terwijl er van het net geimporteerd wordt.

@@ -28,6 +28,7 @@ from .const import (
     SET_MAX_A,
     SET_MAX_NET_A,
     SET_MIN_A,
+    SET_PRECLIMATE_MAX_W,
     SET_PV_MARGE_WATT,
     SET_ZON_BENUT_FACTOR,
 )
@@ -57,6 +58,12 @@ NUMBERS: tuple[PeblarNumberDescription, ...] = (
         key=SET_PV_MARGE_WATT, setting_key=SET_PV_MARGE_WATT,
         translation_key=SET_PV_MARGE_WATT, name="PV-marge",
         native_min_value=0, native_max_value=2000, native_step=10,
+        native_unit_of_measurement="W", mode=NumberMode.BOX,
+    ),
+    PeblarNumberDescription(
+        key=SET_PRECLIMATE_MAX_W, setting_key=SET_PRECLIMATE_MAX_W,
+        translation_key=SET_PRECLIMATE_MAX_W, name="Voorklimaat vermogen",
+        native_min_value=3450, native_max_value=11040, native_step=50,
         native_unit_of_measurement="W", mode=NumberMode.BOX,
     ),
     PeblarNumberDescription(
