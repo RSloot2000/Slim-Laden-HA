@@ -97,6 +97,10 @@ OPTIONAL_ENTITY_KEYS: list[str] = [
 # ---------------------------------------------------------------------------
 SET_LAADMODUS = "laadmodus"
 SET_DOEL_SOC = "doel_soc"
+# Ondergrens-SoC (reserve): zakt de accu hieronder, dan laden we met een gezond
+# tempo bij - ongeacht modus of zon, ook zonder vertrektijd. Beschermt tegen een
+# auto die op een laag niveau blijft staan. 0 = uit.
+SET_RESERVE_SOC = "reserve_soc_pct"
 SET_ACCU_CAPACITEIT_KWH = "accu_capaciteit_kwh"
 SET_PV_MARGE_WATT = "pv_marge_watt"
 SET_MIN_A = "laadvermogen_min_a"
@@ -129,6 +133,7 @@ LAADMODI = ["Zomer", "Winter"]
 DEFAULT_SETTINGS: dict = {
     SET_LAADMODUS: "Zomer",
     SET_DOEL_SOC: 100,
+    SET_RESERVE_SOC: 0,
     # Energie aan de laadpaal voor 100% SoC: bruikbare accu (~21,5 kWh op een
     # C300e) gedeeld door het laadrendement. kwh_needed stuurt de netvloer aan
     # en wordt dus aan de netzijde gemeten, niet aan de accuzijde.
@@ -204,6 +209,15 @@ WPA_EMA_ALPHA = 0.3               # nieuw gewicht (0.7 oud + 0.3 nieuw)
 MEAS_SETTLE_S = 15
 AMP_SETTLE_S = 30
 PHASE_UP_BUFFER_W = 150
+# Aparte, grotere buffer onder de 3-fasedrempel: een grotere dode band rond de
+# drempel voorkomt geflapper tussen 1 en 3 fasen bij wisselende (winter)zon. De
+# noodstop bij netimport blijft op de ongebufferde drempel, dus veiligheid eerst.
+PHASE_DOWN_BUFFER_W = 200
+# Zachte afbouw richting de doel-SoC: binnen deze procentafstand en bij voldoende
+# tijd wordt het vermogen gehalveerd (nooit onder het 1-fase-minimum), om de lange
+# CV-trilling en standby aan het einde van de sessie te verkorten.
+TAPER_SOC_GAP_PCT = 5.0
+TAPER_FACTOR = 0.5
 EMERGENCY_IMPORT_W = 400
 CHARGE_SWITCH_MIN_MINUTEN = 5
 STOP_GRACE_MINUTEN = 3

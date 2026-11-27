@@ -30,6 +30,7 @@ from .const import (
     SET_MIN_A,
     SET_PRECLIMATE_MAX_W,
     SET_PV_MARGE_WATT,
+    SET_RESERVE_SOC,
     SET_ZON_BENUT_FACTOR,
 )
 from .coordinator import PeblarCoordinator
@@ -45,6 +46,12 @@ NUMBERS: tuple[PeblarNumberDescription, ...] = (
     PeblarNumberDescription(
         key=SET_DOEL_SOC, setting_key=SET_DOEL_SOC, translation_key=SET_DOEL_SOC,
         name="Doel-SoC",
+        native_min_value=0, native_max_value=100, native_step=1,
+        native_unit_of_measurement="%", mode=NumberMode.SLIDER,
+    ),
+    PeblarNumberDescription(
+        key=SET_RESERVE_SOC, setting_key=SET_RESERVE_SOC,
+        translation_key=SET_RESERVE_SOC, name="Reserve-SoC",
         native_min_value=0, native_max_value=100, native_step=1,
         native_unit_of_measurement="%", mode=NumberMode.SLIDER,
     ),

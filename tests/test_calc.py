@@ -491,7 +491,8 @@ d = compute(
 )
 check("Winter/veel zon: toch laden", d.want_charge is True)
 check("Winter/veel zon: geen laadpauze", d.solar_pause is False)
-check("Winter/veel zon: target zonder zon-term", d.target_w == d.must_charge_w)
+check("Winter/veel zon: pakt gratis zon mee", d.target_w == d.available_solar_w)
+check("Winter/veel zon: vloer blijft behouden", d.target_w >= d.must_charge_w)
 check(
     "Winter/veel zon: toch netvloer (wacht niet op zon)",
     d.base_floor_w > 0 and d.must_charge_w > 0,
@@ -509,6 +510,154 @@ d = compute(
 check("Winter deadline gepasseerd: behind_schedule", d.behind_schedule)
 check("Winter deadline gepasseerd: max vermogen", d.must_charge_w == 15 * 3 * 230)
 check("Winter deadline gepasseerd: laden", d.want_charge is True)
+
+# 35) Winter zonder vertrektijd: geen zon om op te wachten -> standaard laden op
+#     het minimum (1 fase, minimale ampère), zodra de accu nog iets nodig heeft.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Winter", soc_raw=40, soc_target=100,
+        battery_capacity_kwh=23.3, peb_status="suspended", grid_ok=True,
+        current_phase=3, charger_w=0, grid_w=0,
+    )
+)
+check("Winter/geen vertrek: laden zonder zon", d.want_charge is True)
+check("Winter/geen vertrek: must_charge = 1-fase minimum", d.must_charge_w == 5 * 230)
+check("Winter/geen vertrek: doel volgt minimum", d.target_w == 5 * 230)
+check("Winter/geen vertrek: terug naar 1 fase", d.desired_phase == 1)
+check("Winter/geen vertrek: minimale ampère", d.amps_set == 6)
+
+# 36) Winter zonder vertrektijd maar accu vol: geen minimumlading afdwingen.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Winter", soc_raw=100, soc_target=100,
+        battery_capacity_kwh=23.3, peb_status="suspended", grid_ok=True,
+        current_phase=1, charger_w=0, grid_w=0,
+    )
+)
+check("Winter/geen vertrek vol: geen laadbehoefte", d.want_charge is False)
+check("Winter/geen vertrek vol: must_charge 0", d.must_charge_w == 0)
+
+# ---------------------------------------------------------------------------
+# Reserve-SoC: onder de ondergrens laden met vol vermogen, ongeacht modus/zon.
+# ---------------------------------------------------------------------------
+# 37) Zomer zonder vertrektijd (normaal zon-only) + SoC onder de reserve -> vol.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=20, soc_target=100, min_soc=30,
+        battery_capacity_kwh=23.3, peb_status="suspended", grid_ok=True,
+        current_phase=1, charger_w=0, grid_w=0,
+    )
+)
+check("Reserve: reserve_active", d.reserve_active is True)
+check("Reserve: laden zonder zon", d.want_charge is True)
+check("Reserve: niet solar_only", d.solar_only is False)
+check("Reserve: vol vermogen", d.target_w == 15 * 3 * 230)
+check("Reserve: 3 fasen", d.desired_phase == 3)
+check("Reserve: max ampère", d.amps_set == 16)
+
+# 38) Reserve uit (0) of niet overschreden: gewoon zon-only-gedrag terug.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=20, soc_target=100, min_soc=0,
+        battery_capacity_kwh=23.3, peb_status="suspended", grid_ok=True,
+        current_phase=1, charger_w=0, grid_w=0,
+    )
+)
+check("Reserve uit: solar_only", d.solar_only is True)
+check("Reserve uit: niet laden", d.want_charge is False)
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=35, soc_target=100, min_soc=30,
+        battery_capacity_kwh=23.3, peb_status="suspended", grid_ok=True,
+        current_phase=1, charger_w=0, grid_w=0,
+    )
+)
+check("Reserve niet overschreden: solar_only", d.solar_only is True)
+check("Reserve niet overschreden: niet laden", d.want_charge is False)
+
+# 39) Reserve boven de doel-SoC wordt geklemd: doel 95 met reserve 100 -> 95.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=90, soc_target=95, min_soc=100,
+        battery_capacity_kwh=23.3, peb_status="suspended", grid_ok=True,
+        current_phase=1, charger_w=0, grid_w=0,
+    )
+)
+check("Reserve geklemd onder doel: actief", d.reserve_active is True)
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=96, soc_target=95, min_soc=100,
+        battery_capacity_kwh=23.3, peb_status="suspended", grid_ok=True,
+        current_phase=1, charger_w=0, grid_w=0,
+    )
+)
+check("Reserve boven doel: niet actief bij SoC erboven", d.reserve_active is False)
+
+# ---------------------------------------------------------------------------
+# Zachte afbouw (taper) in de laatste procenten richting de doel-SoC.
+# ---------------------------------------------------------------------------
+# 40) Gap 3%, veel tijd, geen zon: doel wordt gehalveerd tot het 1-fase-minimum.
+dep = NOW + timedelta(hours=8, minutes=45)
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=97, soc_target=100,
+        battery_capacity_kwh=50, kwh_per_pct=4.0, grid_ok=True,
+        dep_time=dep.strftime("%H:%M:%S"), dep_date=dep.date().strftime("%Y-%m-%d"),
+        current_phase=3, charger_w=0, grid_w=0,
+    )
+)
+check("Taper: netvloer boven 1-fase-minimum", d.must_charge_w > 5 * 230)
+check("Taper: doel afgebouwd naar minimum", d.target_w == 5 * 230)
+check("Taper: doel lager dan vloer", d.target_w < d.must_charge_w)
+
+# 41) Buiten het taper-venster (grote gap): geen afbouw, doel volgt de vloer.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Zomer", soc_raw=80, soc_target=100,
+        battery_capacity_kwh=50, kwh_per_pct=4.0, grid_ok=True,
+        dep_time=dep.strftime("%H:%M:%S"), dep_date=dep.date().strftime("%Y-%m-%d"),
+        current_phase=3, charger_w=0, grid_w=0,
+    )
+)
+check("Geen taper bij grote gap", d.target_w == d.must_charge_w)
+
+# ---------------------------------------------------------------------------
+# Fase-hysterese: grotere dode band onder de 3-fasedrempel, noodstop blijft.
+# ---------------------------------------------------------------------------
+# 42) Signaal net onder de drempel maar binnen de down-buffer: blijft 3 fasen.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Winter", soc_raw=50, soc_target=100,
+        battery_capacity_kwh=23.3, peb_status="charging", grid_ok=True,
+        current_phase=3, charger_w=0, grid_w=-3400,
+        charger_avg_w=0, grid_avg_w=-3400,
+    )
+)
+check("Buffer: signaal binnen dode band", 3 * 5 * 230 - 200 <= d.target_w < 3 * 5 * 230)
+check("Buffer: blijft op 3 fasen", d.desired_phase == 3)
+
+# 43) Signaal onder de gebufferde drempel: valt terug naar 1 fase.
+d = compute(
+    ChargeInputs(
+    now=NOW, laadmodus="Winter", soc_raw=50, soc_target=100,
+    battery_capacity_kwh=23.3, peb_status="charging", grid_ok=True,
+    current_phase=3, charger_w=0, grid_w=-3100,
+    charger_avg_w=0, grid_avg_w=-3100,
+    )
+)
+check("Beneden buffer: terug naar 1 fase", d.desired_phase == 1)
+
+# 44) Noodgeval: netimport op 3 fasen terwijl het op 1 fase past -> direct terug,
+#     voorbij de fase-cooldown.
+d = compute(
+    ChargeInputs(
+        now=NOW, laadmodus="Winter", soc_raw=50, soc_target=100,
+        battery_capacity_kwh=23.3, peb_status="charging", grid_ok=True,
+        current_phase=3, charger_w=0, grid_w=1000,
+        minutes_since_phase_change=0,
+    )
+)
+check("Noodstop: direct naar 1 fase, voorbij cooldown", d.desired_phase == 1)
 
 # ---------------------------------------------------------------------------
 # Onleesbare vertrektijd mag nooit als "deadline verstreken" tellen.

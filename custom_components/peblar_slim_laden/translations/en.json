@@ -213,6 +213,9 @@
       "doel_soc": {
         "name": "Target SoC"
       },
+      "reserve_soc_pct": {
+        "name": "Reserve SoC"
+      },
       "accu_capaciteit_kwh": {
         "name": "Battery capacity"
       },
